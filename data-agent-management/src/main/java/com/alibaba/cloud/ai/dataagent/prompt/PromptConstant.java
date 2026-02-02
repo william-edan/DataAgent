@@ -96,4 +96,8 @@ public class PromptConstant {
 		return new PromptTemplate(PromptLoader.loadPrompt("data-view-analyze"));
 	}
 
+	public static PromptTemplate getQueryTypeClassifierPromptTemplate() {
+		return new PromptTemplate(PromptLoader.loadPrompt("query-type-classifier"));
+	}
+
 }

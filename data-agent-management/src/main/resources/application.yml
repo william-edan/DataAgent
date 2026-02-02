@@ -3,15 +3,19 @@ server:
 
 # 存储 DataAgent 业务数据的数据库，并非Agent分析数据的来源
 spring:
+  elasticsearch:
+    uris: http://127.0.0.1:9200
+    username: elastic
+    password: XWuH_rhjfz5ZD+Brrn0D
   datasource:
-    url: ${DATA_AGENT_DATASOURCE_URL:jdbc:mysql://127.0.0.1:3306/saa_data_agent?useUnicode=true&characterEncoding=utf-8&zeroDateTimeBehavior=convertToNull&transformedBitIsBoolean=true&allowMultiQueries=true&allowPublicKeyRetrieval=true&useSSL=false&serverTimezone=Asia/Shanghai}
+    url: ${DATA_AGENT_DATASOURCE_URL:jdbc:mysql://127.0.0.1:3306/ai_assistant_agent?useUnicode=true&characterEncoding=utf-8&zeroDateTimeBehavior=convertToNull&transformedBitIsBoolean=true&allowMultiQueries=true&allowPublicKeyRetrieval=true&useSSL=false&serverTimezone=Asia/Shanghai}
     username: ${DATA_AGENT_DATASOURCE_USERNAME:root}
-    password: ${DATA_AGENT_DATASOURCE_PASSWORD:root}
+    password: ${DATA_AGENT_DATASOURCE_PASSWORD:StrongRootPwd}
     driver-class-name: com.mysql.cj.jdbc.Driver
     type: com.alibaba.druid.pool.DruidDataSource
   sql:
     init:
-      mode: never
+      mode: always
       schema-locations: classpath:sql/schema.sql
       data-locations: classpath:sql/data.sql
       continue-on-error: true
@@ -19,7 +23,11 @@ spring:
       encoding: utf-8
   ai:
     vectorstore:
-      type: simple
+      type: elasticsearch
+      elasticsearch:
+        index-name: data-agent-knowledge
+        similarity: cosine
+        dimensions: 1024   # 和 embedding 模型一致
     alibaba:
       data-agent:
         vector-store:

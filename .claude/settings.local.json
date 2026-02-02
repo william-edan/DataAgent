@@ -1,0 +1,26 @@
+{
+  "permissions": {
+    "allow": [
+      "Skill(superpowers:systematic-debugging)",
+      "Bash(./mvnw spring-boot:run:*)",
+      "Bash(./mvnw.cmd spring-boot:run:*)",
+      "Skill(superpowers:brainstorming)",
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "Skill(superpowers:using-git-worktrees)",
+      "Bash(git check-ignore:*)",
+      "Bash(git worktree add:*)",
+      "Bash(./mvnw clean:*)",
+      "Bash(./mvnw.cmd clean install:*)",
+      "Skill(superpowers:writing-plans)",
+      "Skill(superpowers:subagent-driven-development)",
+      "Bash(../mvnw.cmd test -Dtest=QueryTypeTest)",
+      "Bash(./mvnw checkstyle:check:*)",
+      "Bash(./mvnw test:*)",
+      "Bash(../mvnw test:*)",
+      "Bash(../mvnw.cmd test -Dtest=QueryTypeResultTest)",
+      "Bash(mvn test:*)",
+      "Skill(superpowers:executing-plans)"
+    ]
+  }
+}

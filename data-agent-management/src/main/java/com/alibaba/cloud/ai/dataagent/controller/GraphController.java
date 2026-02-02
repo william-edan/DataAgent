@@ -16,7 +16,11 @@
 package com.alibaba.cloud.ai.dataagent.controller;
 
 import com.alibaba.cloud.ai.dataagent.dto.GraphRequest;
+import com.alibaba.cloud.ai.dataagent.dto.QueryTypeResult;
+import com.alibaba.cloud.ai.dataagent.enums.QueryType;
+import com.alibaba.cloud.ai.dataagent.service.classifier.QueryTypeClassifier;
 import com.alibaba.cloud.ai.dataagent.service.graph.GraphService;
+import com.alibaba.cloud.ai.dataagent.service.query.QueryService;
 import com.alibaba.cloud.ai.dataagent.vo.GraphNodeResponse;
 import jakarta.servlet.http.HttpServletResponse;
 import lombok.AllArgsConstructor;
@@ -43,6 +47,10 @@ public class GraphController {
 
 	private final GraphService graphService;
 
+	private final QueryService queryService;
+
+	private final QueryTypeClassifier queryTypeClassifier;
+
 	@GetMapping(value = "/stream/search", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
 	public Flux<ServerSentEvent<GraphNodeResponse>> streamSearch(@RequestParam("agentId") String agentId,
 			@RequestParam(value = "threadId", required = false) String threadId, @RequestParam("query") String query,
@@ -60,16 +68,64 @@ public class GraphController {
 
 		Sinks.Many<ServerSentEvent<GraphNodeResponse>> sink = Sinks.many().unicast().onBackpressureBuffer();
 
-		GraphRequest request = GraphRequest.builder()
-			.agentId(agentId)
-			.threadId(threadId)
-			.query(query)
-			.humanFeedback(humanFeedback)
-			.humanFeedbackContent(humanFeedbackContent)
-			.rejectedPlan(rejectedPlan)
-			.nl2sqlOnly(nl2sqlOnly)
-			.build();
-		graphService.graphStreamProcess(sink, request);
+		// 智能路由：仅对新请求进行分类，人工反馈请求直接走完整流程
+		if (humanFeedbackContent == null || humanFeedbackContent.isEmpty()) {
+			// 分类查询类型
+			long classifyStartTime = System.currentTimeMillis();
+			QueryTypeResult classificationResult;
+
+			try {
+				classificationResult = queryTypeClassifier.classify(query);
+			}
+			catch (Exception e) {
+				log.warn("Query classification failed for query: '{}', fallback to COMPLEX. Error: {}", query,
+						e.getMessage());
+				classificationResult = QueryTypeResult.builder()
+					.queryType(QueryType.COMPLEX)
+					.reason("分类失败，保守降级")
+					.build();
+			}
+
+			long classifyDuration = System.currentTimeMillis() - classifyStartTime;
+			QueryType queryType = classificationResult.getQueryType();
+
+			// 记录分类决策
+			log.info("Query classified: type={}, query='{}', reason='{}', classification_latency={}ms", queryType,
+					query, classificationResult.getReason(), classifyDuration);
+
+			// 根据分类结果路由
+			if (queryType == QueryType.SIMPLE) {
+				log.info("Routing to SIMPLE query path for query: '{}'", query);
+				queryService.queryStream(sink, agentId, query);
+			}
+			else {
+				log.info("Routing to COMPLEX analysis path for query: '{}'", query);
+				GraphRequest request = GraphRequest.builder()
+					.agentId(agentId)
+					.threadId(threadId)
+					.query(query)
+					.humanFeedback(humanFeedback)
+					.humanFeedbackContent(humanFeedbackContent)
+					.rejectedPlan(rejectedPlan)
+					.nl2sqlOnly(nl2sqlOnly)
+					.build();
+				graphService.graphStreamProcess(sink, request);
+			}
+		}
+		else {
+			// 人工反馈请求直接走完整流程
+			log.info("Human feedback detected, routing to COMPLEX analysis path");
+			GraphRequest request = GraphRequest.builder()
+				.agentId(agentId)
+				.threadId(threadId)
+				.query(query)
+				.humanFeedback(humanFeedback)
+				.humanFeedbackContent(humanFeedbackContent)
+				.rejectedPlan(rejectedPlan)
+				.nl2sqlOnly(nl2sqlOnly)
+				.build();
+			graphService.graphStreamProcess(sink, request);
+		}
 
 		return sink.asFlux().filter(sse -> {
 			// 1. 如果 event 是 "complete" 或 "error"，直接放行（不管 text 是否为空）

@@ -36,6 +36,8 @@ public final class Constant {
 
 	public static final String NL2SQL_GRAPH_NAME = "nl2sqlGraph";
 
+	public static final String QUERY_GRAPH_NAME = "queryGraph";
+
 	public static final String INTENT_RECOGNITION_NODE_OUTPUT = "INTENT_RECOGNITION_NODE_OUTPUT";
 
 	public static final String QUERY_ENHANCE_NODE_OUTPUT = "QUERY_ENHANCE_NODE_OUTPUT";
@@ -72,6 +74,10 @@ public final class Constant {
 	public static final String PLANNER_NODE_OUTPUT = "PLANNER_NODE_OUTPUT";
 
 	public static final String SQL_EXECUTE_NODE_OUTPUT = "SQL_EXECUTE_NODE_OUTPUT";
+
+	public static final String QUERY_SQL_RESULT = "QUERY_SQL_RESULT";
+
+	public static final String QUERY_SQL = "QUERY_SQL";
 
 	// dialect
 	public static final String DB_DIALECT_TYPE = "DB_DIALECT_TYPE";
@@ -111,6 +117,8 @@ public final class Constant {
 	public static final String SQL_GENERATE_NODE = "SQL_GENERATE_NODE";
 
 	public static final String SQL_EXECUTE_NODE = "SQL_EXECUTE_NODE";
+
+	public static final String QUERY_SQL_EXECUTE_NODE = "QUERY_SQL_EXECUTE_NODE";
 
 	public static final String SEMANTIC_CONSISTENCY_NODE = "SEMANTIC_CONSISTENCY_NODE";
 
