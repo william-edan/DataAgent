@@ -58,3 +58,6 @@ modified_mcp_config.json
 
 uploads/*
 .java-version
+
+# Git worktrees for isolated development
+.worktrees/
