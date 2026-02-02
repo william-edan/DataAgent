@@ -113,69 +113,10 @@ public class DataAgentConfiguration implements DisposableBean {
 	}
 
 	@Bean
+	@Primary
 	public StateGraph nl2sqlGraph(NodeBeanUtil nodeBeanUtil, CodeExecutorProperties codeExecutorProperties)
 			throws GraphStateException {
-
-		KeyStrategyFactory keyStrategyFactory = () -> {
-			HashMap<String, KeyStrategy> keyStrategyHashMap = new HashMap<>();
-			// User input
-			keyStrategyHashMap.put(INPUT_KEY, KeyStrategy.REPLACE);
-			// Agent ID
-			keyStrategyHashMap.put(AGENT_ID, KeyStrategy.REPLACE);
-			// Multi-turn context
-			keyStrategyHashMap.put(MULTI_TURN_CONTEXT, KeyStrategy.REPLACE);
-			// Intent recognition
-			keyStrategyHashMap.put(INTENT_RECOGNITION_NODE_OUTPUT, KeyStrategy.REPLACE);
-			// QUERY_ENHANCE_NODE节点输出
-			keyStrategyHashMap.put(QUERY_ENHANCE_NODE_OUTPUT, KeyStrategy.REPLACE);
-			// Semantic model
-			keyStrategyHashMap.put(GENEGRATED_SEMANTIC_MODEL_PROMPT, KeyStrategy.REPLACE);
-			// EVIDENCE节点输出
-			keyStrategyHashMap.put(EVIDENCE, KeyStrategy.REPLACE);
-			// schema recall节点输出
-			keyStrategyHashMap.put(TABLE_DOCUMENTS_FOR_SCHEMA_OUTPUT, KeyStrategy.REPLACE);
-			keyStrategyHashMap.put(COLUMN_DOCUMENTS__FOR_SCHEMA_OUTPUT, KeyStrategy.REPLACE);
-			// table relation节点输出
-			keyStrategyHashMap.put(TABLE_RELATION_OUTPUT, KeyStrategy.REPLACE);
-			keyStrategyHashMap.put(TABLE_RELATION_EXCEPTION_OUTPUT, KeyStrategy.REPLACE);
-			keyStrategyHashMap.put(TABLE_RELATION_RETRY_COUNT, KeyStrategy.REPLACE);
-			keyStrategyHashMap.put(DB_DIALECT_TYPE, KeyStrategy.REPLACE);
-			// Feasibility Assessment 节点输出
-			keyStrategyHashMap.put(FEASIBILITY_ASSESSMENT_NODE_OUTPUT, KeyStrategy.REPLACE);
-			// sql generate节点输出
-			keyStrategyHashMap.put(SQL_GENERATE_SCHEMA_MISSING_ADVICE, KeyStrategy.REPLACE);
-			keyStrategyHashMap.put(SQL_GENERATE_OUTPUT, KeyStrategy.REPLACE);
-			keyStrategyHashMap.put(SQL_GENERATE_COUNT, KeyStrategy.REPLACE);
-			keyStrategyHashMap.put(SQL_REGENERATE_REASON, KeyStrategy.REPLACE);
-			// Semantic consistence节点输出
-			keyStrategyHashMap.put(SEMANTIC_CONSISTENCY_NODE_OUTPUT, KeyStrategy.REPLACE);
-			// Planner 节点输出
-			keyStrategyHashMap.put(PLANNER_NODE_OUTPUT, KeyStrategy.REPLACE);
-			// PlanExecutorNode
-			keyStrategyHashMap.put(PLAN_CURRENT_STEP, KeyStrategy.REPLACE);
-			keyStrategyHashMap.put(PLAN_NEXT_NODE, KeyStrategy.REPLACE);
-			keyStrategyHashMap.put(PLAN_VALIDATION_STATUS, KeyStrategy.REPLACE);
-			keyStrategyHashMap.put(PLAN_VALIDATION_ERROR, KeyStrategy.REPLACE);
-			keyStrategyHashMap.put(PLAN_REPAIR_COUNT, KeyStrategy.REPLACE);
-			// SQL Execute 节点输出
-			keyStrategyHashMap.put(SQL_EXECUTE_NODE_OUTPUT, KeyStrategy.REPLACE);
-			// Python代码运行相关
-			keyStrategyHashMap.put(SQL_RESULT_LIST_MEMORY, KeyStrategy.REPLACE);
-			keyStrategyHashMap.put(PYTHON_IS_SUCCESS, KeyStrategy.REPLACE);
-			keyStrategyHashMap.put(PYTHON_TRIES_COUNT, KeyStrategy.REPLACE);
-			keyStrategyHashMap.put(PYTHON_FALLBACK_MODE, KeyStrategy.REPLACE);
-			keyStrategyHashMap.put(PYTHON_EXECUTE_NODE_OUTPUT, KeyStrategy.REPLACE);
-			keyStrategyHashMap.put(PYTHON_GENERATE_NODE_OUTPUT, KeyStrategy.REPLACE);
-			keyStrategyHashMap.put(PYTHON_ANALYSIS_NODE_OUTPUT, KeyStrategy.REPLACE);
-			// NL2SQL相关
-			keyStrategyHashMap.put(IS_ONLY_NL2SQL, KeyStrategy.REPLACE);
-			// Human Review keys
-			keyStrategyHashMap.put(HUMAN_REVIEW_ENABLED, KeyStrategy.REPLACE);
-			keyStrategyHashMap.put(HUMAN_FEEDBACK_DATA, KeyStrategy.REPLACE);
-			// Final result
-			keyStrategyHashMap.put(RESULT, KeyStrategy.REPLACE);
-			return keyStrategyHashMap;
-		};
+		KeyStrategyFactory keyStrategyFactory = buildKeyStrategyFactory();
 
 		StateGraph stateGraph = new StateGraph(NL2SQL_GRAPH_NAME, keyStrategyFactory)
 			.addNode(INTENT_RECOGNITION_NODE, nodeBeanUtil.getNodeBeanAsync(IntentRecognitionNode.class))
@@ -254,6 +195,110 @@ public class DataAgentConfiguration implements DisposableBean {
 		log.info("workflow in PlantUML format as follows \n\n" + graphRepresentation.content() + "\n\n");
 
 		return stateGraph;
+	}
+
+	@Bean
+	public StateGraph queryGraph(NodeBeanUtil nodeBeanUtil) throws GraphStateException {
+		KeyStrategyFactory keyStrategyFactory = buildKeyStrategyFactory();
+
+		StateGraph stateGraph = new StateGraph(QUERY_GRAPH_NAME, keyStrategyFactory)
+			.addNode(INTENT_RECOGNITION_NODE, nodeBeanUtil.getNodeBeanAsync(IntentRecognitionNode.class))
+			.addNode(EVIDENCE_RECALL_NODE, nodeBeanUtil.getNodeBeanAsync(EvidenceRecallNode.class))
+			.addNode(QUERY_ENHANCE_NODE, nodeBeanUtil.getNodeBeanAsync(QueryEnhanceNode.class))
+			.addNode(SCHEMA_RECALL_NODE, nodeBeanUtil.getNodeBeanAsync(SchemaRecallNode.class))
+			.addNode(TABLE_RELATION_NODE, nodeBeanUtil.getNodeBeanAsync(TableRelationNode.class))
+			.addNode(SQL_GENERATE_NODE, nodeBeanUtil.getNodeBeanAsync(SqlGenerateNode.class))
+			.addNode(SEMANTIC_CONSISTENCY_NODE, nodeBeanUtil.getNodeBeanAsync(SemanticConsistencyNode.class))
+			.addNode(QUERY_SQL_EXECUTE_NODE, nodeBeanUtil.getNodeBeanAsync(QuerySqlExecuteNode.class));
+
+		stateGraph.addEdge(START, INTENT_RECOGNITION_NODE)
+			.addConditionalEdges(INTENT_RECOGNITION_NODE, edge_async(new IntentRecognitionDispatcher()),
+					Map.of(EVIDENCE_RECALL_NODE, EVIDENCE_RECALL_NODE, END, END))
+			.addEdge(EVIDENCE_RECALL_NODE, QUERY_ENHANCE_NODE)
+			.addConditionalEdges(QUERY_ENHANCE_NODE, edge_async(new QueryEnhanceDispatcher()),
+					Map.of(SCHEMA_RECALL_NODE, SCHEMA_RECALL_NODE, END, END))
+			.addConditionalEdges(SCHEMA_RECALL_NODE, edge_async(new SchemaRecallDispatcher()),
+					Map.of(TABLE_RELATION_NODE, TABLE_RELATION_NODE, END, END))
+			.addConditionalEdges(TABLE_RELATION_NODE, edge_async(new QueryTableRelationDispatcher()),
+					Map.of(SQL_GENERATE_NODE, SQL_GENERATE_NODE, END, END, TABLE_RELATION_NODE, TABLE_RELATION_NODE))
+			.addConditionalEdges(SQL_GENERATE_NODE, nodeBeanUtil.getEdgeBeanAsync(SqlGenerateDispatcher.class),
+					Map.of(SQL_GENERATE_NODE, SQL_GENERATE_NODE, END, END, SEMANTIC_CONSISTENCY_NODE,
+							SEMANTIC_CONSISTENCY_NODE))
+			.addConditionalEdges(SEMANTIC_CONSISTENCY_NODE, edge_async(new QuerySemanticConsistencyDispatcher()),
+					Map.of(SQL_GENERATE_NODE, SQL_GENERATE_NODE, QUERY_SQL_EXECUTE_NODE, QUERY_SQL_EXECUTE_NODE))
+			.addEdge(QUERY_SQL_EXECUTE_NODE, END);
+
+		GraphRepresentation graphRepresentation = stateGraph.getGraph(GraphRepresentation.Type.PLANTUML,
+				"query graph");
+		log.info("query graph in PlantUML format as follows \n\n" + graphRepresentation.content() + "\n\n");
+
+		return stateGraph;
+	}
+
+	private KeyStrategyFactory buildKeyStrategyFactory() {
+		return () -> {
+			HashMap<String, KeyStrategy> keyStrategyHashMap = new HashMap<>();
+			// User input
+			keyStrategyHashMap.put(INPUT_KEY, KeyStrategy.REPLACE);
+			// Agent ID
+			keyStrategyHashMap.put(AGENT_ID, KeyStrategy.REPLACE);
+			// Multi-turn context
+			keyStrategyHashMap.put(MULTI_TURN_CONTEXT, KeyStrategy.REPLACE);
+			// Intent recognition
+			keyStrategyHashMap.put(INTENT_RECOGNITION_NODE_OUTPUT, KeyStrategy.REPLACE);
+			// QUERY_ENHANCE_NODE节点输出
+			keyStrategyHashMap.put(QUERY_ENHANCE_NODE_OUTPUT, KeyStrategy.REPLACE);
+			// Semantic model
+			keyStrategyHashMap.put(GENEGRATED_SEMANTIC_MODEL_PROMPT, KeyStrategy.REPLACE);
+			// EVIDENCE节点输出
+			keyStrategyHashMap.put(EVIDENCE, KeyStrategy.REPLACE);
+			// schema recall节点输出
+			keyStrategyHashMap.put(TABLE_DOCUMENTS_FOR_SCHEMA_OUTPUT, KeyStrategy.REPLACE);
+			keyStrategyHashMap.put(COLUMN_DOCUMENTS__FOR_SCHEMA_OUTPUT, KeyStrategy.REPLACE);
+			// table relation节点输出
+			keyStrategyHashMap.put(TABLE_RELATION_OUTPUT, KeyStrategy.REPLACE);
+			keyStrategyHashMap.put(TABLE_RELATION_EXCEPTION_OUTPUT, KeyStrategy.REPLACE);
+			keyStrategyHashMap.put(TABLE_RELATION_RETRY_COUNT, KeyStrategy.REPLACE);
+			keyStrategyHashMap.put(DB_DIALECT_TYPE, KeyStrategy.REPLACE);
+			// Feasibility Assessment 节点输出
+			keyStrategyHashMap.put(FEASIBILITY_ASSESSMENT_NODE_OUTPUT, KeyStrategy.REPLACE);
+			// sql generate节点输出
+			keyStrategyHashMap.put(SQL_GENERATE_SCHEMA_MISSING_ADVICE, KeyStrategy.REPLACE);
+			keyStrategyHashMap.put(SQL_GENERATE_OUTPUT, KeyStrategy.REPLACE);
+			keyStrategyHashMap.put(SQL_GENERATE_COUNT, KeyStrategy.REPLACE);
+			keyStrategyHashMap.put(SQL_REGENERATE_REASON, KeyStrategy.REPLACE);
+			// Semantic consistence节点输出
+			keyStrategyHashMap.put(SEMANTIC_CONSISTENCY_NODE_OUTPUT, KeyStrategy.REPLACE);
+			// Planner 节点输出
+			keyStrategyHashMap.put(PLANNER_NODE_OUTPUT, KeyStrategy.REPLACE);
+			// PlanExecutorNode
+			keyStrategyHashMap.put(PLAN_CURRENT_STEP, KeyStrategy.REPLACE);
+			keyStrategyHashMap.put(PLAN_NEXT_NODE, KeyStrategy.REPLACE);
+			keyStrategyHashMap.put(PLAN_VALIDATION_STATUS, KeyStrategy.REPLACE);
+			keyStrategyHashMap.put(PLAN_VALIDATION_ERROR, KeyStrategy.REPLACE);
+			keyStrategyHashMap.put(PLAN_REPAIR_COUNT, KeyStrategy.REPLACE);
+			// SQL Execute 节点输出
+			keyStrategyHashMap.put(SQL_EXECUTE_NODE_OUTPUT, KeyStrategy.REPLACE);
+			// Query SQL execute 节点输出
+			keyStrategyHashMap.put(QUERY_SQL_RESULT, KeyStrategy.REPLACE);
+			keyStrategyHashMap.put(QUERY_SQL, KeyStrategy.REPLACE);
+			// Python代码运行相关
+			keyStrategyHashMap.put(SQL_RESULT_LIST_MEMORY, KeyStrategy.REPLACE);
+			keyStrategyHashMap.put(PYTHON_IS_SUCCESS, KeyStrategy.REPLACE);
+			keyStrategyHashMap.put(PYTHON_TRIES_COUNT, KeyStrategy.REPLACE);
+			keyStrategyHashMap.put(PYTHON_FALLBACK_MODE, KeyStrategy.REPLACE);
+			keyStrategyHashMap.put(PYTHON_EXECUTE_NODE_OUTPUT, KeyStrategy.REPLACE);
+			keyStrategyHashMap.put(PYTHON_GENERATE_NODE_OUTPUT, KeyStrategy.REPLACE);
+			keyStrategyHashMap.put(PYTHON_ANALYSIS_NODE_OUTPUT, KeyStrategy.REPLACE);
+			// NL2SQL相关
+			keyStrategyHashMap.put(IS_ONLY_NL2SQL, KeyStrategy.REPLACE);
+			// Human Review keys
+			keyStrategyHashMap.put(HUMAN_REVIEW_ENABLED, KeyStrategy.REPLACE);
+			keyStrategyHashMap.put(HUMAN_FEEDBACK_DATA, KeyStrategy.REPLACE);
+			// Final result
+			keyStrategyHashMap.put(RESULT, KeyStrategy.REPLACE);
+			return keyStrategyHashMap;
+		};
 	}
 
 	/**
