@@ -1,0 +1,14 @@
+{
+  "fieldPatterns": {
+    "title": ["name", "title", "名称", "姓名", "标题"],
+    "avatar": ["avatar", "photo", "头像", "照片"],
+    "badge": ["status", "state", "type", "level", "状态", "类型", "级别"],
+    "date": ["date", "time", "日期", "时间", "created", "updated"],
+    "currency": ["price", "amount", "salary", "金额", "价格", "薪资"],
+    "phone": ["phone", "mobile", "tel", "电话", "手机"]
+  },
+  "importanceRules": {
+    "high": ["id", "name", "title", "status", "type"],
+    "low": ["created_at", "updated_at", "remark", "description", "备注"]
+  }
+}
