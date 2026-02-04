@@ -34,4 +34,15 @@ public class ForeignKeyInfoBO {
 
 	private String referencedColumn;
 
+	/**
+	 * 关系类型：1:1（一对一）、1:N（一对多）、N:1（多对一）
+	 * <p>从 table 的角度看 referencedTable 的关系</p>
+	 */
+	private String relationType;
+
+	/**
+	 * 业务描述（可选）
+	 */
+	private String description;
+
 }

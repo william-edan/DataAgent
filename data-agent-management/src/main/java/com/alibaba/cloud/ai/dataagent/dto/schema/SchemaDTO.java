@@ -15,6 +15,7 @@
  */
 package com.alibaba.cloud.ai.dataagent.dto.schema;
 
+import com.alibaba.cloud.ai.dataagent.bo.schema.ForeignKeyInfoBO;
 import java.util.List;
 import lombok.Data;
 import lombok.NoArgsConstructor;
@@ -32,6 +33,12 @@ public class SchemaDTO {
 	private List<TableDTO> table;
 
 	private List<String> foreignKeys;
+
+	/**
+	 * 结构化外键信息（包含关系类型）
+	 * 用于嵌套数据识别和前端智能渲染
+	 */
+	private List<ForeignKeyInfoBO> foreignKeyDetails;
 
 	@Override
 	public String toString() {

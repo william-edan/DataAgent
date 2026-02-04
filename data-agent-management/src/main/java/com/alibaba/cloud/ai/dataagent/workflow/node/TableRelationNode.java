@@ -107,8 +107,13 @@ public class TableRelationNode implements NodeAction {
 		List<String> logicalForeignKeys = getLogicalForeignKeys(Long.valueOf(agentIdStr), tableDocuments);
 		log.info("Found {} logical foreign keys for agent: {}", logicalForeignKeys.size(), agentIdStr);
 
+		List<com.alibaba.cloud.ai.dataagent.bo.schema.ForeignKeyInfoBO> logicalForeignKeyDetails = getLogicalForeignKeyDetails(
+				Long.valueOf(agentIdStr), tableDocuments);
+		log.info("Found {} logical foreign key details with relationType for agent: {}",
+				logicalForeignKeyDetails.size(), agentIdStr);
+
 		SchemaDTO initialSchema = buildInitialSchema(agentIdStr, columnDocuments, tableDocuments, agentDbConfig,
-				logicalForeignKeys);
+				logicalForeignKeys, logicalForeignKeyDetails);
 
 		Map<String, Object> resultMap = new HashMap<>();
 		// 将 DB_DIALECT_TYPE 添加到 resultMap，确保它在 generator 完成时被写入 state
@@ -160,7 +165,8 @@ public class TableRelationNode implements NodeAction {
 
 	/** Builds initial schema from column and table documents. */
 	private SchemaDTO buildInitialSchema(String agentId, List<Document> columnDocuments, List<Document> tableDocuments,
-			DbConfigBO agentDbConfig, List<String> logicalForeignKeys) {
+			DbConfigBO agentDbConfig, List<String> logicalForeignKeys,
+			List<com.alibaba.cloud.ai.dataagent.bo.schema.ForeignKeyInfoBO> logicalForeignKeyDetails) {
 		SchemaDTO schemaDTO = new SchemaDTO();
 
 		schemaService.extractDatabaseName(schemaDTO, agentDbConfig);
@@ -180,6 +186,13 @@ public class TableRelationNode implements NodeAction {
 				schemaDTO.setForeignKeys(allForeignKeys);
 			}
 			log.info("Merged {} logical foreign keys into schema for agent: {}", logicalForeignKeys.size(), agentId);
+		}
+
+		// 设置结构化外键信息（包含关系类型）
+		if (logicalForeignKeyDetails != null && !logicalForeignKeyDetails.isEmpty()) {
+			schemaDTO.setForeignKeyDetails(logicalForeignKeyDetails);
+			log.info("Set {} logical foreign key details (with relationType) into schema for agent: {}",
+					logicalForeignKeyDetails.size(), agentId);
 		}
 
 		return schemaDTO;
@@ -246,6 +259,45 @@ public class TableRelationNode implements NodeAction {
 		}
 		catch (Exception e) {
 			log.error("Error fetching logical foreign keys for agent: {}", agentId, e);
+			return Collections.emptyList();
+		}
+	}
+
+	/**
+	 * 获取结构化的逻辑外键列表（包含关系类型）
+	 */
+	private List<com.alibaba.cloud.ai.dataagent.bo.schema.ForeignKeyInfoBO> getLogicalForeignKeyDetails(Long agentId,
+			List<Document> tableDocuments) {
+		try {
+			AgentDatasource agentDatasource = agentDatasourceService.getCurrentAgentDatasource(agentId);
+			if (agentDatasource == null || agentDatasource.getDatasourceId() == null) {
+				return Collections.emptyList();
+			}
+
+			Set<String> recalledTableNames = tableDocuments.stream()
+				.map(doc -> (String) doc.getMetadata().get("name"))
+				.filter(name -> name != null && !name.isEmpty())
+				.collect(Collectors.toSet());
+
+			List<LogicalRelation> allLogicalRelations = datasourceService
+				.getLogicalRelations(agentDatasource.getDatasourceId());
+
+			return allLogicalRelations.stream()
+				.filter(lr -> recalledTableNames.contains(lr.getSourceTableName())
+						|| recalledTableNames.contains(lr.getTargetTableName()))
+				.map(lr -> com.alibaba.cloud.ai.dataagent.bo.schema.ForeignKeyInfoBO.builder()
+					.table(lr.getSourceTableName())
+					.column(lr.getSourceColumnName())
+					.referencedTable(lr.getTargetTableName())
+					.referencedColumn(lr.getTargetColumnName())
+					.relationType(lr.getRelationType())
+					.description(lr.getDescription())
+					.build())
+				.distinct()
+				.collect(Collectors.toList());
+		}
+		catch (Exception e) {
+			log.error("Error fetching logical foreign key details for agent: {}", agentId, e);
 			return Collections.emptyList();
 		}
 	}

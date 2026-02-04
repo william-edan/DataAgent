@@ -32,13 +32,23 @@ import java.util.stream.Collectors;
 @Slf4j
 public class BusinessFriendlyFieldFilter {
 
-	// 默认隐藏的技术字段名称模式
+	// 默认隐藏的技术字段名称模式（仅隐藏纯技术字段，保留业务字段）
 	private static final Set<String> DEFAULT_HIDDEN_FIELDS = new HashSet<>(
 			Arrays.asList("id", "created_at", "updated_at", "create_time", "update_time", "deleted_at", "delete_time",
-					"is_deleted", "version", "tenant_id", "creator", "updater", "remark"));
+					"is_deleted", "version", "tenant_id", "creator", "updater"));
 
-	// 默认隐藏的字段名称后缀
-	private static final Set<String> HIDDEN_FIELD_SUFFIXES = new HashSet<>(Arrays.asList("_id", "_time", "_at"));
+	// 默认隐藏的字段名称后缀（仅隐藏外键ID，不隐藏业务时间字段）
+	private static final Set<String> HIDDEN_FIELD_SUFFIXES = new HashSet<>(Arrays.asList("_id"));
+
+	// 业务时间字段关键词（即使以_time结尾也不隐藏）
+	private static final Set<String> BUSINESS_TIME_KEYWORDS = new HashSet<>(
+			Arrays.asList("start", "end", "begin", "finish", "entry", "leave", "arrival", "departure",
+					"开始", "结束", "入职", "离职", "到达", "出发"));
+
+	// 业务描述字段（永不隐藏）
+	private static final Set<String> BUSINESS_DESCRIPTION_FIELDS = new HashSet<>(
+			Arrays.asList("remark", "remarks", "description", "desc", "note", "notes", "content", "comment", "comments",
+					"备注", "描述", "说明", "内容", "详情"));
 
 	// 解析COMMENT中的元数据标记 格式: "字段说明|hidden:true|priority:1"
 	private static final Pattern METADATA_PATTERN = Pattern.compile("\\|([^:]+):([^|]+)");
@@ -168,6 +178,11 @@ public class BusinessFriendlyFieldFilter {
 
 		String lowerName = columnName.toLowerCase();
 
+		// 业务描述字段永不隐藏
+		if (BUSINESS_DESCRIPTION_FIELDS.contains(lowerName)) {
+			return false;
+		}
+
 		// 检查是否在默认隐藏列表中
 		if (DEFAULT_HIDDEN_FIELDS.contains(lowerName)) {
 			return true;
@@ -176,6 +191,14 @@ public class BusinessFriendlyFieldFilter {
 		// 检查是否以隐藏后缀结尾
 		for (String suffix : HIDDEN_FIELD_SUFFIXES) {
 			if (lowerName.endsWith(suffix)) {
+				// 检查是否是业务时间字段（不应该被隐藏）
+				boolean isBusinessTimeField = BUSINESS_TIME_KEYWORDS.stream()
+					.anyMatch(keyword -> lowerName.contains(keyword));
+
+				if (isBusinessTimeField) {
+					return false; // 业务时间字段不隐藏
+				}
+
 				return true;
 			}
 		}
@@ -193,12 +216,16 @@ public class BusinessFriendlyFieldFilter {
 
 		String lowerName = columnName.toLowerCase();
 
-		// 检查字段名是否包含时间相关关键词
-		if (lowerName.contains("time") || lowerName.contains("date") || lowerName.equals("entry_time")) {
+		// 检查字段名是否包含时间相关关键词（英文或中文）
+		boolean hasTimeKeyword = lowerName.contains("time") || lowerName.contains("date")
+				|| lowerName.contains("时间") || lowerName.contains("日期")
+				|| lowerName.contains("时刻") || lowerName.contains("时段");
+
+		if (hasTimeKeyword) {
 			// 进一步检查类型是否是数字类型（时间戳通常是BIGINT或INT）
 			if (columnInfo != null && StringUtils.isNotBlank(columnInfo.getType())) {
 				String type = columnInfo.getType().toUpperCase();
-				return type.contains("INT") || type.contains("LONG") || type.contains("BIGINT");
+				return type.contains("INT") || type.contains("LONG") || type.contains("BIGINT") || type.equals("NUMBER");
 			}
 			return true; // 如果无法确定类型，根据字段名判断
 		}

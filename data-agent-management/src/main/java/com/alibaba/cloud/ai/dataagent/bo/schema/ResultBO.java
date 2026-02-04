@@ -15,6 +15,7 @@
  */
 package com.alibaba.cloud.ai.dataagent.bo.schema;
 
+import com.alibaba.cloud.ai.dataagent.bo.display.DisplayHint;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Data;
@@ -29,5 +30,15 @@ public class ResultBO {
 	private ResultSetBO resultSet;
 
 	private DisplayStyleBO displayStyle;
+
+	/**
+	 * 展示提示（用于移动端智能渲染）
+	 */
+	private DisplayHint displayHint;
+
+	/**
+	 * 元信息（记录数、类型等）
+	 */
+	private MetaInfo meta;
 
 }

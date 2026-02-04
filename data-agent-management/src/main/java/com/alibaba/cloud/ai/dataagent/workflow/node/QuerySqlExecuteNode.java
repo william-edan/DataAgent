@@ -137,15 +137,19 @@ public class QuerySqlExecuteNode implements NodeAction {
 		result.put(Constant.RESULT, resultSetBO);
 		result.put("STRUCTURED_RESULT", structuredResult);
 
-		// 构建ResultBO对象(前端期望的格式)
+		// 构建ResultBO对象(前端期望的格式，包含displayHint用于移动端智能渲染)
 		ResultBO resultBO = new ResultBO();
 		resultBO.setResultSet(resultSetBO);
 		// 简单查询不需要图表配置,设置为null
 		resultBO.setDisplayStyle(null);
+		// 设置展示提示和元信息
+		resultBO.setDisplayHint(displayHint);
+		resultBO.setMeta(structuredResult.getMeta());
 
 		String resultJson;
 		try {
 			resultJson = JsonUtil.getObjectMapper().writeValueAsString(resultBO);
+			log.info("ResultBO JSON output: {}", resultJson);
 		}
 		catch (Exception e) {
 			log.error("Failed to convert ResultBO to JSON", e);

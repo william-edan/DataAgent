@@ -42,8 +42,13 @@
     检查 JOIN 顺序，避免非必要的子查询，避免在索引列上做函数运算。
 5. **正确性**：
     确保没有幻觉字段，并且逻辑与【当前执行步骤】完全一致。
+6.  **多表查询列名限定 (关键)**：
+    *   当 SQL 涉及多表 JOIN 时，**必须**使用表别名限定所有列名，避免列名歧义错误。
+    *   **错误示例**：`SELECT id, name FROM employee e JOIN department d ON e.dept_id = d.id` （`id` 和 `name` 可能存在于多个表中，导致 "Column 'xxx' in field list is ambiguous" 错误）
+    *   **正确示例**：`SELECT e.id, e.name FROM employee e JOIN department d ON e.dept_id = d.id` （所有列名都有明确的表别名前缀）
+    *   即使某列名在当前 JOIN 的表中是唯一的，也建议使用表别名限定，以提高 SQL 可读性和健壮性。
 
-6.  **安全转义 (关键)**：
+7.  **安全转义 (关键)**：
     *   **必须**对所有表名和列名进行转义或者加引号，以避免保留字冲突（例如列名为 `order`, `group`, `user` 时）。
     *   若为 **MySQL**，请使用反引号 (例如 \`order\`)。
     *   若为 **PostgreSQL/Oracle**，请使用双引号 (例如 "order")。
@@ -72,5 +77,15 @@ select `id`, `name` from `user`;
 ## ✅正确输出（Right Output）：
 
 select `id`, `name` from `user`;
+
+## ❌错误输出（多表JOIN时列名未限定）：
+
+select `id`, `title`, `remark` from `oa_plan` p join `oa_admin` a on p.`admin_id` = a.`id` where a.`name` = '张三';
+
+❌错误原因：`id`、`title`、`remark` 等列名未使用表别名限定，当多表中存在同名列时会导致 "Column 'xxx' in field list is ambiguous" 错误。
+
+## ✅正确输出（多表JOIN时列名已限定）：
+
+select p.`id`, p.`title`, p.`remark` from `oa_plan` p join `oa_admin` a on p.`admin_id` = a.`id` where a.`name` = '张三';
 
 ---
