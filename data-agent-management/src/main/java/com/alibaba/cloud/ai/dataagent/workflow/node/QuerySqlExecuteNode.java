@@ -16,8 +16,12 @@
 package com.alibaba.cloud.ai.dataagent.workflow.node;
 
 import com.alibaba.cloud.ai.dataagent.bo.DbConfigBO;
+import com.alibaba.cloud.ai.dataagent.bo.display.DisplayHint;
 import com.alibaba.cloud.ai.dataagent.bo.schema.ColumnInfoBO;
+import com.alibaba.cloud.ai.dataagent.bo.schema.MetaInfo;
+import com.alibaba.cloud.ai.dataagent.bo.schema.ResultBO;
 import com.alibaba.cloud.ai.dataagent.bo.schema.ResultSetBO;
+import com.alibaba.cloud.ai.dataagent.bo.schema.StructuredResultBO;
 import com.alibaba.cloud.ai.dataagent.connector.DbQueryParameter;
 import com.alibaba.cloud.ai.dataagent.connector.accessor.Accessor;
 import com.alibaba.cloud.ai.dataagent.constant.Constant;
@@ -25,6 +29,7 @@ import com.alibaba.cloud.ai.dataagent.dto.schema.ColumnDTO;
 import com.alibaba.cloud.ai.dataagent.dto.schema.SchemaDTO;
 import com.alibaba.cloud.ai.dataagent.dto.schema.TableDTO;
 import com.alibaba.cloud.ai.dataagent.enums.TextType;
+import com.alibaba.cloud.ai.dataagent.service.display.DisplayHintService;
 import com.alibaba.cloud.ai.dataagent.service.nl2sql.Nl2SqlService;
 import com.alibaba.cloud.ai.dataagent.util.ChatResponseUtil;
 import com.alibaba.cloud.ai.dataagent.util.DatabaseUtil;
@@ -32,7 +37,6 @@ import com.alibaba.cloud.ai.dataagent.util.FluxUtil;
 import com.alibaba.cloud.ai.dataagent.util.JsonUtil;
 import com.alibaba.cloud.ai.dataagent.util.ResultSetEnricherUtil;
 import com.alibaba.cloud.ai.dataagent.util.StateUtil;
-import com.alibaba.cloud.ai.dataagent.bo.schema.ResultBO;
 import com.alibaba.cloud.ai.graph.GraphResponse;
 import com.alibaba.cloud.ai.graph.OverAllState;
 import com.alibaba.cloud.ai.graph.action.NodeAction;
@@ -66,6 +70,8 @@ public class QuerySqlExecuteNode implements NodeAction {
 
 	private final Nl2SqlService nl2SqlService;
 
+	private final DisplayHintService displayHintService;
+
 	@Override
 	public Map<String, Object> apply(OverAllState state) throws Exception {
 		String sqlQuery = StateUtil.getStringValue(state, SQL_GENERATE_OUTPUT);
@@ -96,9 +102,40 @@ public class QuerySqlExecuteNode implements NodeAction {
 			log.warn("Failed to enrich result set with metadata, returning original result", e);
 		}
 
+		// 生成展示提示
+		DisplayHint displayHint = null;
+		SchemaDTO schemaDTO = null;
+		try {
+			schemaDTO = StateUtil.getObjectValue(state, TABLE_RELATION_OUTPUT, SchemaDTO.class);
+			String tableName = null;
+			if (schemaDTO != null && schemaDTO.getTable() != null && !schemaDTO.getTable().isEmpty()) {
+				tableName = schemaDTO.getTable().get(0).getName();
+			}
+			displayHint = displayHintService.generate(tableName, resultSetBO, null, schemaDTO);
+			log.info("Generated displayHint for table: {}", tableName);
+		}
+		catch (Exception e) {
+			log.warn("Failed to generate display hint", e);
+		}
+
+		// 构建结构化结果
+		StructuredResultBO structuredResult = StructuredResultBO.builder()
+			.resultSet(resultSetBO)
+			.displayHint(displayHint)
+			.meta(MetaInfo.builder()
+				.recordType(rowCount == 1 ? "single" : "list")
+				.totalCount(rowCount)
+				.hasNestedData(false)
+				.build())
+			.build();
+
 		// 构建返回结果
-		Map<String, Object> result = Map.of(QUERY_SQL, sqlQuery, QUERY_SQL_RESULT, resultSetBO,
-				SQL_RESULT_LIST_MEMORY, resultSetBO.getData(), Constant.RESULT, resultSetBO);
+		Map<String, Object> result = new HashMap<>();
+		result.put(QUERY_SQL, sqlQuery);
+		result.put(QUERY_SQL_RESULT, resultSetBO);
+		result.put(SQL_RESULT_LIST_MEMORY, resultSetBO.getData());
+		result.put(Constant.RESULT, resultSetBO);
+		result.put("STRUCTURED_RESULT", structuredResult);
 
 		// 构建ResultBO对象(前端期望的格式)
 		ResultBO resultBO = new ResultBO();
