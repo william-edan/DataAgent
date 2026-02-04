@@ -191,6 +191,43 @@
           :handleFeedback="handleHumanFeedback"
         />
 
+        <!-- 智能路由调试信息 -->
+        <div
+          v-if="routingDebugInfo.show && currentSession"
+          class="routing-debug-panel"
+          :class="{ 'simple-route': routingDebugInfo.predictedType === 'SIMPLE' }"
+        >
+          <div class="debug-header">
+            <span class="debug-icon">🎯</span>
+            <span class="debug-title">智能路由</span>
+            <el-tag
+              :type="routingDebugInfo.predictedType === 'SIMPLE' ? 'success' : 'warning'"
+              size="small"
+            >
+              {{ routingDebugInfo.predictedType === 'SIMPLE' ? '简单查询' : '复杂分析' }}
+            </el-tag>
+            <span class="debug-path">
+              {{ routingDebugInfo.predictedType === 'SIMPLE' ? 'QueryService' : 'GraphService' }}
+            </span>
+            <el-button text size="small" @click="routingDebugInfo.show = false">
+              <el-icon><Close /></el-icon>
+            </el-button>
+          </div>
+          <div class="debug-body">
+            <div class="debug-info-item">
+              <span class="info-label">查询内容:</span>
+              <span class="info-value">{{ routingDebugInfo.query }}</span>
+            </div>
+            <div class="debug-info-item" v-if="routingDebugInfo.firstNode">
+              <span class="info-label">首个节点:</span>
+              <span class="info-value">{{ routingDebugInfo.firstNode }}</span>
+            </div>
+            <div class="debug-tip">
+              💡 提示: 后端会自动根据查询内容选择最优路径。简单查询走轻量级路径,复杂分析走完整报告流程。
+            </div>
+          </div>
+        </div>
+
         <!-- 输入区域 -->
         <div class="input-area" v-if="currentSession">
           <div class="input-controls">
@@ -500,6 +537,12 @@
         useSessionStateManager();
       const isStreaming = ref(false);
       const nodeBlocks = ref<GraphNodeResponse[][]>([]);
+      const routingDebugInfo = ref({
+        show: false,
+        query: '',
+        predictedType: 'COMPLEX',
+        firstNode: '',
+      });
       const options = ref({
         markdownIt: {
           linkify: true,
@@ -536,7 +579,7 @@
 
       // 结果集显示配置
       const resultSetDisplayConfig = ref<ResultSetDisplayConfig>({
-        showSqlResults: false,
+        showSqlResults: true,  // 简单查询默认显示表格结果
         pageSize: 20,
       });
 
@@ -614,6 +657,29 @@
             threadId: sessionState.lastRequest?.threadId || null,
           };
 
+          // 预测路由类型 (前端简单推断)
+          const queryLower = userInput.value.toLowerCase();
+          const isSimpleQuery =
+            queryLower.includes('查询') ||
+            queryLower.includes('显示') ||
+            queryLower.includes('列出') ||
+            queryLower.includes('有多少');
+          const isComplexQuery =
+            queryLower.includes('分析') ||
+            queryLower.includes('趋势') ||
+            queryLower.includes('对比') ||
+            queryLower.includes('为什么') ||
+            queryLower.includes('报告');
+
+          routingDebugInfo.value = {
+            show: true,
+            query: userInput.value,
+            predictedType: isComplexQuery ? 'COMPLEX' : isSimpleQuery ? 'SIMPLE' : 'COMPLEX',
+            firstNode: '',
+          };
+
+          console.log('🎯 智能路由预测:', routingDebugInfo.value.predictedType);
+
           userInput.value = '';
 
           await sendGraphRequest(request, true);
@@ -690,6 +756,12 @@
 
               if (sessionState.lastRequest) {
                 sessionState.lastRequest.threadId = response.threadId;
+              }
+
+              // 记录第一个节点（用于验证路由）
+              if (response.nodeName && !routingDebugInfo.value.firstNode) {
+                routingDebugInfo.value.firstNode = response.nodeName;
+                console.log('🎯 首个节点:', response.nodeName);
               }
 
               // 检查是否是报告节点
@@ -1357,6 +1429,7 @@
         autoScroll,
         chatContainer,
         nodeBlocks,
+        routingDebugInfo,
         agentId,
         showHumanFeedback,
         lastRequest,
@@ -1793,6 +1866,90 @@
     }
   }
 
+  /* 智能路由调试面板样式 */
+  .routing-debug-panel {
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    border-radius: 8px;
+    padding: 16px;
+    margin-bottom: 16px;
+    box-shadow: 0 4px 12px rgba(102, 126, 234, 0.15);
+    animation: slideIn 0.3s ease-out;
+  }
+
+  .routing-debug-panel.simple-route {
+    background: linear-gradient(135deg, #11998e 0%, #38ef7d 100%);
+  }
+
+  @keyframes slideIn {
+    from {
+      opacity: 0;
+      transform: translateY(-10px);
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0);
+    }
+  }
+
+  .debug-header {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    color: white;
+    margin-bottom: 12px;
+  }
+
+  .debug-icon {
+    font-size: 20px;
+  }
+
+  .debug-title {
+    font-weight: 600;
+    font-size: 16px;
+  }
+
+  .debug-path {
+    font-size: 13px;
+    padding: 2px 8px;
+    background: rgba(255, 255, 255, 0.2);
+    border-radius: 12px;
+    margin-left: auto;
+  }
+
+  .debug-body {
+    background: rgba(255, 255, 255, 0.95);
+    border-radius: 6px;
+    padding: 12px;
+  }
+
+  .debug-info-item {
+    display: flex;
+    gap: 8px;
+    margin-bottom: 8px;
+    font-size: 14px;
+  }
+
+  .info-label {
+    font-weight: 600;
+    color: #606266;
+    min-width: 80px;
+  }
+
+  .info-value {
+    color: #303133;
+    flex: 1;
+  }
+
+  .debug-tip {
+    margin-top: 12px;
+    padding: 8px;
+    background: #f4f4f5;
+    border-radius: 4px;
+    font-size: 13px;
+    color: #606266;
+    line-height: 1.6;
+  }
+
   /* 响应式设计 */
   @media (max-width: 768px) {
     .el-aside {
@@ -1805,6 +1962,14 @@
 
     .input-container {
       flex-direction: column;
+    }
+
+    .routing-debug-panel {
+      padding: 12px;
+    }
+
+    .debug-header {
+      flex-wrap: wrap;
     }
   }
 </style>

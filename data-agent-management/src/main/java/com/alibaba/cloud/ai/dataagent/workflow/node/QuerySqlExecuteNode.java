@@ -16,20 +16,35 @@
 package com.alibaba.cloud.ai.dataagent.workflow.node;
 
 import com.alibaba.cloud.ai.dataagent.bo.DbConfigBO;
+import com.alibaba.cloud.ai.dataagent.bo.schema.ColumnInfoBO;
 import com.alibaba.cloud.ai.dataagent.bo.schema.ResultSetBO;
 import com.alibaba.cloud.ai.dataagent.connector.DbQueryParameter;
 import com.alibaba.cloud.ai.dataagent.connector.accessor.Accessor;
 import com.alibaba.cloud.ai.dataagent.constant.Constant;
+import com.alibaba.cloud.ai.dataagent.dto.schema.ColumnDTO;
+import com.alibaba.cloud.ai.dataagent.dto.schema.SchemaDTO;
+import com.alibaba.cloud.ai.dataagent.dto.schema.TableDTO;
+import com.alibaba.cloud.ai.dataagent.enums.TextType;
 import com.alibaba.cloud.ai.dataagent.service.nl2sql.Nl2SqlService;
+import com.alibaba.cloud.ai.dataagent.util.ChatResponseUtil;
 import com.alibaba.cloud.ai.dataagent.util.DatabaseUtil;
+import com.alibaba.cloud.ai.dataagent.util.FluxUtil;
+import com.alibaba.cloud.ai.dataagent.util.JsonUtil;
+import com.alibaba.cloud.ai.dataagent.util.ResultSetEnricherUtil;
 import com.alibaba.cloud.ai.dataagent.util.StateUtil;
+import com.alibaba.cloud.ai.dataagent.bo.schema.ResultBO;
+import com.alibaba.cloud.ai.graph.GraphResponse;
 import com.alibaba.cloud.ai.graph.OverAllState;
 import com.alibaba.cloud.ai.graph.action.NodeAction;
+import com.alibaba.cloud.ai.graph.streaming.StreamingOutput;
 import lombok.AllArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.commons.lang3.StringUtils;
+import org.springframework.ai.chat.model.ChatResponse;
 import org.springframework.stereotype.Component;
+import reactor.core.publisher.Flux;
 
+import java.util.HashMap;
 import java.util.Map;
 
 import static com.alibaba.cloud.ai.dataagent.constant.Constant.AGENT_ID;
@@ -37,6 +52,7 @@ import static com.alibaba.cloud.ai.dataagent.constant.Constant.QUERY_SQL;
 import static com.alibaba.cloud.ai.dataagent.constant.Constant.QUERY_SQL_RESULT;
 import static com.alibaba.cloud.ai.dataagent.constant.Constant.SQL_GENERATE_OUTPUT;
 import static com.alibaba.cloud.ai.dataagent.constant.Constant.SQL_RESULT_LIST_MEMORY;
+import static com.alibaba.cloud.ai.dataagent.constant.Constant.TABLE_RELATION_OUTPUT;
 
 /**
  * Query-only SQL execution node that runs SQL synchronously and returns result set.
@@ -69,10 +85,103 @@ public class QuerySqlExecuteNode implements NodeAction {
 		Accessor dbAccessor = databaseUtil.getAgentAccessor(agentId);
 		ResultSetBO resultSetBO = dbAccessor.executeSqlAndReturnObject(dbConfig, dbQueryParameter);
 
-		log.info("Query SQL executed successfully, rows: {}",
-				resultSetBO.getData() != null ? resultSetBO.getData().size() : 0);
+		int rowCount = resultSetBO.getData() != null ? resultSetBO.getData().size() : 0;
+		log.info("Query SQL executed successfully, rows: {}", rowCount);
 
-		return Map.of(QUERY_SQL, sqlQuery, QUERY_SQL_RESULT, resultSetBO, SQL_RESULT_LIST_MEMORY, resultSetBO.getData(),
-				Constant.RESULT, resultSetBO);
+		// 增强查询结果:添加字段说明和枚举值转换 (仅简单查询路径)
+		try {
+			resultSetBO = enrichResultSetWithMetadata(resultSetBO, state);
+		}
+		catch (Exception e) {
+			log.warn("Failed to enrich result set with metadata, returning original result", e);
+		}
+
+		// 构建返回结果
+		Map<String, Object> result = Map.of(QUERY_SQL, sqlQuery, QUERY_SQL_RESULT, resultSetBO,
+				SQL_RESULT_LIST_MEMORY, resultSetBO.getData(), Constant.RESULT, resultSetBO);
+
+		// 构建ResultBO对象(前端期望的格式)
+		ResultBO resultBO = new ResultBO();
+		resultBO.setResultSet(resultSetBO);
+		// 简单查询不需要图表配置,设置为null
+		resultBO.setDisplayStyle(null);
+
+		String resultJson;
+		try {
+			resultJson = JsonUtil.getObjectMapper().writeValueAsString(resultBO);
+		}
+		catch (Exception e) {
+			log.error("Failed to convert ResultBO to JSON", e);
+			resultJson = "{}";
+		}
+
+		// 创建流式响应,输出RESULT_SET格式的JSON数据
+		Flux<ChatResponse> resultFlux = Flux.just(ChatResponseUtil.createResponse("查询执行成功，共返回 " + rowCount + " 条记录"),
+				ChatResponseUtil.createResponse("查询结果："),
+				ChatResponseUtil.createPureResponse(TextType.RESULT_SET.getStartSign()),
+				ChatResponseUtil.createPureResponse(resultJson),
+				ChatResponseUtil.createPureResponse(TextType.RESULT_SET.getEndSign()));
+
+		Flux<GraphResponse<StreamingOutput>> generator = FluxUtil.createStreamingGeneratorWithMessages(this.getClass(),
+				state, v -> result, resultFlux);
+
+		return Map.of(QUERY_SQL_RESULT, generator);
 	}
+
+	/**
+	 * 增强查询结果:添加字段说明和枚举值转换 (仅简单查询路径,从State读取已召回的表信息)
+	 */
+	private ResultSetBO enrichResultSetWithMetadata(ResultSetBO resultSetBO, OverAllState state) {
+		if (resultSetBO == null || resultSetBO.getColumn() == null || resultSetBO.getColumn().isEmpty()) {
+			return resultSetBO;
+		}
+
+		// 1. 从 State 中获取 TableRelationNode 输出的 SchemaDTO
+		SchemaDTO schemaDTO = StateUtil.getObjectValue(state, TABLE_RELATION_OUTPUT, SchemaDTO.class);
+
+		if (schemaDTO == null || schemaDTO.getTable() == null || schemaDTO.getTable().isEmpty()) {
+			log.debug("No TABLE_RELATION_OUTPUT found in state, skipping result set enrichment");
+			return resultSetBO;
+		}
+
+		// 2. 从 SchemaDTO 中提取字段元数据,转换为 ColumnInfoBO 格式
+		Map<String, ColumnInfoBO> columnMetadataMap = new HashMap<>();
+
+		for (TableDTO table : schemaDTO.getTable()) {
+			if (table.getColumn() == null)
+				continue;
+
+			for (ColumnDTO columnDTO : table.getColumn()) {
+				// 将 ColumnDTO 转换为 ColumnInfoBO
+				ColumnInfoBO columnInfo = ColumnInfoBO.builder()
+					.name(columnDTO.getName())
+					.tableName(table.getName())
+					.description(columnDTO.getDescription())
+					.type(columnDTO.getType())
+					.build();
+
+				// 添加 "tableName.columnName" 和 "columnName" 两种键
+				String qualifiedKey = table.getName() + "." + columnDTO.getName();
+				columnMetadataMap.put(qualifiedKey, columnInfo);
+				columnMetadataMap.putIfAbsent(columnDTO.getName(), columnInfo);
+			}
+		}
+
+		if (columnMetadataMap.isEmpty()) {
+			log.warn("No column metadata found in SchemaDTO, returning original result");
+			return resultSetBO;
+		}
+
+		log.info("Loaded {} column metadata entries from State for enrichment", columnMetadataMap.size());
+
+		// 3. 调用工具类进行增强
+		Map<String, String> columnToTableMap = new HashMap<>();
+		ResultSetBO enrichedResult = ResultSetEnricherUtil.enrichResultSet(resultSetBO, columnMetadataMap,
+				columnToTableMap);
+
+		log.info("Successfully enriched result set with field descriptions and enum conversions");
+		return enrichedResult;
+	}
+
+
 }

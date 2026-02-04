@@ -20,7 +20,15 @@
       "Bash(../mvnw test:*)",
       "Bash(../mvnw.cmd test -Dtest=QueryTypeResultTest)",
       "Bash(mvn test:*)",
-      "Skill(superpowers:executing-plans)"
+      "Skill(superpowers:executing-plans)",
+      "Bash(mvn clean compile:*)",
+      "Skill(brainstorming)",
+      "Bash(./mvnw compile:*)",
+      "Bash(make build:*)",
+      "Bash(mvn compile:*)",
+      "Bash(mvn checkstyle:check:*)",
+      "Bash(mvn spotless:apply:*)",
+      "Bash(npm run build:*)"
     ]
   }
 }

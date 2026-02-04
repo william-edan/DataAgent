@@ -31,7 +31,10 @@ import org.apache.commons.lang3.BooleanUtils;
 import org.apache.commons.lang3.StringUtils;
 import org.springframework.ai.chat.prompt.PromptTemplate;
 
+import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.time.ZoneId;
+import java.time.ZonedDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.*;
 import java.util.stream.Collectors;
@@ -120,6 +123,14 @@ public class PromptHelper {
 		params.put("schema_info", schemaInfo);
 		params.put("evidence", sqlGenerationDTO.getEvidence());
 		params.put("execution_description", sqlGenerationDTO.getExecutionDescription());
+		// Use China timezone (UTC+8) for time calculations
+		ZoneId chinaZone = ZoneId.of("Asia/Shanghai");
+		LocalDate today = LocalDate.now(chinaZone);
+		ZonedDateTime todayStart = today.atStartOfDay(chinaZone);
+		ZonedDateTime todayEnd = today.atTime(23, 59, 59).atZone(chinaZone);
+		params.put("current_time_info", LocalDateTime.now(chinaZone).format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss")));
+		params.put("today_start_timestamp", todayStart.toEpochSecond());
+		params.put("today_end_timestamp", todayEnd.toEpochSecond());
 		return PromptConstant.getNewSqlGeneratorPromptTemplate().render(params);
 	}
 
@@ -169,6 +180,14 @@ public class PromptHelper {
 		params.put("error_sql", sqlGenerationDTO.getSql());
 		params.put("error_message", sqlGenerationDTO.getExceptionMessage());
 		params.put("execution_description", sqlGenerationDTO.getExecutionDescription());
+		// Use China timezone (UTC+8) for time calculations
+		ZoneId chinaZone = ZoneId.of("Asia/Shanghai");
+		LocalDate today = LocalDate.now(chinaZone);
+		ZonedDateTime todayStart = today.atStartOfDay(chinaZone);
+		ZonedDateTime todayEnd = today.atTime(23, 59, 59).atZone(chinaZone);
+		params.put("current_time_info", LocalDateTime.now(chinaZone).format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss")));
+		params.put("today_start_timestamp", todayStart.toEpochSecond());
+		params.put("today_end_timestamp", todayEnd.toEpochSecond());
 
 		return PromptConstant.getSqlErrorFixerPromptTemplate().render(params);
 	}

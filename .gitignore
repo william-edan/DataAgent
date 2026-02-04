@@ -42,7 +42,13 @@ target/
 
 # checkstyle report files
 **/checkstyle-report.xml
+
+# Log files and directories
+logs/
 **/logs/*
+*.log
+*.log.*
+*.log.gz
 
 # SpecStory files - ignore entire .specstory directory
 .specstory/

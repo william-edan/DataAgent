@@ -64,10 +64,23 @@ public class SemanticConsistencyNode implements NodeAction {
 		String sql = StateUtil.getStringValue(state, SQL_GENERATE_OUTPUT);
 		String userQuery = StateUtil.getCanonicalQuery(state);
 
+		// 获取执行描述：如果有计划使用计划指令，否则使用用户原始查询
+		String executionDescription;
+		boolean hasPlan = state.value(PLANNER_NODE_OUTPUT).isPresent();
+		if (hasPlan) {
+			executionDescription = getCurrentExecutionStepInstruction(state);
+			log.debug("Using plan-based execution description for semantic consistency check");
+		}
+		else {
+			// 简单查询路径：直接使用用户查询
+			executionDescription = StateUtil.getStringValue(state, INPUT_KEY, "");
+			log.debug("Using direct user query as execution description for semantic consistency check");
+		}
+
 		SemanticConsistencyDTO semanticConsistencyDTO = SemanticConsistencyDTO.builder()
 			.dialect(dialect)
 			.sql(sql)
-			.executionDescription(getCurrentExecutionStepInstruction(state))
+			.executionDescription(executionDescription)
 			.schemaInfo(buildMixMacSqlDbPrompt(schemaDTO, true))
 			.userQuery(userQuery)
 			.evidence(evidence)
@@ -77,7 +90,7 @@ public class SemanticConsistencyNode implements NodeAction {
 
 		Flux<GraphResponse<StreamingOutput>> generator = FluxUtil.createStreamingGeneratorWithMessages(this.getClass(),
 				state, "开始语义一致性校验", "语义一致性校验完成", validationResult -> {
-					boolean isPassed = !validationResult.startsWith("不通过");
+					boolean isPassed = parseValidationResult(validationResult);
 					Map<String, Object> result = buildValidationResult(isPassed, validationResult);
 					log.info("[{}] Semantic consistency validation result: {}, passed: {}",
 							this.getClass().getSimpleName(), validationResult, isPassed);
@@ -85,6 +98,38 @@ public class SemanticConsistencyNode implements NodeAction {
 				}, validationResultFlux);
 
 		return Map.of(SEMANTIC_CONSISTENCY_NODE_OUTPUT, generator);
+	}
+
+	/**
+	 * Parse validation result to determine if validation passed. Handles cases where LLM
+	 * may output analysis before final conclusion.
+	 * @param validationResult The validation result string from LLM
+	 * @return true if validation passed, false otherwise
+	 */
+	private boolean parseValidationResult(String validationResult) {
+		String trimmed = validationResult.trim();
+		// Directly starts with "通过"
+		if (trimmed.startsWith("通过")) {
+			return true;
+		}
+		// Check if ends with "通过" (LLM may have analysis before final conclusion)
+		if (trimmed.endsWith("通过")) {
+			return true;
+		}
+		// Check last line for final conclusion
+		String[] lines = trimmed.split("\n");
+		String lastLine = lines[lines.length - 1].trim();
+		if (lastLine.equals("通过") || lastLine.startsWith("通过")) {
+			return true;
+		}
+		// Check for self-correction patterns
+		if (trimmed.contains("最终判定为通过") || trimmed.contains("判定为通过")
+				|| trimmed.contains("更正：通过") || trimmed.contains("更正:通过")
+				|| trimmed.contains("修正：通过") || trimmed.contains("修正:通过")) {
+			return true;
+		}
+		// Default: not passed if contains "不通过" without correction
+		return !trimmed.contains("不通过");
 	}
 
 	/**

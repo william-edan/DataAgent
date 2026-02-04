@@ -67,10 +67,19 @@ public class SqlGenerateNode implements NodeAction {
 		// 判断是否达到最大尝试次数
 		int count = state.value(SQL_GENERATE_COUNT, 0);
 		if (count >= properties.getMaxSqlRetryCount()) {
-			ExecutionStep executionStep = PlanProcessUtil.getCurrentExecutionStep(state);
-			String sqlGenerateOutput = String.format("步骤[%d]中，SQL次数生成超限，最大尝试次数：%d，已尝试次数:%d，该步骤内容: \n %s",
-					executionStep.getStep(), properties.getMaxSqlRetryCount(), count,
-					executionStep.getToolParameters().getInstruction());
+			// 检查是否有计划（用于区分简单查询和复杂分析）
+			boolean hasPlan = state.value(PLANNER_NODE_OUTPUT).isPresent();
+			String sqlGenerateOutput;
+			if (hasPlan) {
+				ExecutionStep executionStep = PlanProcessUtil.getCurrentExecutionStep(state);
+				sqlGenerateOutput = String.format("步骤[%d]中，SQL次数生成超限，最大尝试次数：%d，已尝试次数:%d，该步骤内容: \n %s",
+						executionStep.getStep(), properties.getMaxSqlRetryCount(), count,
+						executionStep.getToolParameters().getInstruction());
+			}
+			else {
+				sqlGenerateOutput = String.format("SQL生成超限，最大尝试次数：%d，已尝试次数:%d", properties.getMaxSqlRetryCount(),
+						count);
+			}
 			log.error("SQL generation failed, reason: {}", sqlGenerateOutput);
 			Flux<ChatResponse> preFlux = Flux.just(ChatResponseUtil.createResponse(sqlGenerateOutput));
 			Flux<GraphResponse<StreamingOutput>> generator = FluxUtil.createStreamingGeneratorWithMessages(
@@ -80,9 +89,20 @@ public class SqlGenerateNode implements NodeAction {
 			return Map.of(SQL_GENERATE_OUTPUT, generator);
 		}
 
-		// 获取planner分配的当前执行步骤的sql任务要求，每个步骤的sql任务是不同的。
-		// 不要拿 user query 这个总体的大任务。
-		String promptForSql = getCurrentExecutionStepInstruction(state);
+		// 获取SQL生成的指令
+		// 1. 如果有计划（复杂分析路径），使用planner分配的当前执行步骤的sql任务要求
+		// 2. 如果没有计划（简单查询路径），直接使用用户原始查询
+		String promptForSql;
+		boolean hasPlan = state.value(PLANNER_NODE_OUTPUT).isPresent();
+		if (hasPlan) {
+			promptForSql = getCurrentExecutionStepInstruction(state);
+			log.debug("Using plan-based SQL instruction: {}", promptForSql);
+		}
+		else {
+			// 简单查询路径：直接使用用户查询
+			promptForSql = StateUtil.getStringValue(state, INPUT_KEY, "");
+			log.debug("Using direct user query as SQL instruction: {}", promptForSql);
+		}
 
 		// 准备生成SQL
 		String displayMessage;

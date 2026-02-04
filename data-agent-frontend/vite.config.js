@@ -28,11 +28,11 @@ export default defineConfig({
     port: 3000,
     proxy: {
       '/api': {
-        target: 'http://localhost:8065',
+        target: 'http://localhost:8066',
         changeOrigin: true,
       },
       '/nl2sql': {
-        target: 'http://localhost:8065',
+        target: 'http://localhost:8066',
         changeOrigin: true,
       },
     },

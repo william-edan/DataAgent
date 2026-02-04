@@ -1,5 +1,5 @@
 server:
-  port: 8065
+  port: 8066
 
 # 存储 DataAgent 业务数据的数据库，并非Agent分析数据的来源
 spring:
@@ -54,7 +54,7 @@ spring:
             endpoint: ${OSS_ENDPOINT:}
             bucket-name: ${OSS_BUCKET_NAME:}
             custom-domain: ${OSS_CUSTOM_DOMAIN:}
-        max-sql-retry-count: 10
+        max-sql-retry-count: 2
   servlet:
     multipart:
       max-file-size: 10MB
@@ -69,8 +69,24 @@ mybatis:
 
 # 日志配置
 logging:
+  # 日志文件路径配置
+  file:
+    path: logs
+    name: logs/data-agent.log
+  # 日志级别配置
   level:
-    com.alibaba.cloud.ai.dataagent.service: debug
-    com.alibaba.cloud.ai.dataagent.workflow.node: debug
-    com.alibaba.cloud.ai.mapper: debug
-    org.springframework.jdbc: debug
+    root: INFO
+    com.alibaba.cloud.ai.dataagent: INFO
+    com.alibaba.cloud.ai.dataagent.service: INFO
+    com.alibaba.cloud.ai.dataagent.workflow.node: INFO
+    com.alibaba.cloud.ai.dataagent.workflow.dispatcher: INFO
+    com.alibaba.cloud.ai.dataagent.service.classifier: INFO
+    com.alibaba.cloud.ai.dataagent.controller: INFO
+    com.alibaba.cloud.ai.mapper: DEBUG
+    org.springframework.jdbc: INFO
+    org.springframework.web: INFO
+    org.mybatis: INFO
+  # 日志输出格式配置
+  pattern:
+    console: "%clr(%d{yyyy-MM-dd HH:mm:ss.SSS}){faint} %clr(${LOG_LEVEL_PATTERN:-%5p}) %clr(${PID:- }){magenta} %clr(---){faint} %clr([%15.15t]){faint} %clr(%-40.40logger{39}){cyan} %clr(:){faint} %m%n${LOG_EXCEPTION_CONVERSION_WORD:-%wEx}"
+    file: "%d{yyyy-MM-dd HH:mm:ss.SSS} ${LOG_LEVEL_PATTERN:-%5p} ${PID:- } --- [%t] %-40.40logger{39} : %m%n${LOG_EXCEPTION_CONVERSION_WORD:-%wEx}"

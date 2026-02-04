@@ -68,6 +68,20 @@ public class GraphController {
 
 		Sinks.Many<ServerSentEvent<GraphNodeResponse>> sink = Sinks.many().unicast().onBackpressureBuffer();
 
+		// 构建 GraphRequest（可能用于 COMPLEX 路径）
+		GraphRequest request = GraphRequest.builder()
+			.agentId(agentId)
+			.threadId(threadId)
+			.query(query)
+			.humanFeedback(humanFeedback)
+			.humanFeedbackContent(humanFeedbackContent)
+			.rejectedPlan(rejectedPlan)
+			.nl2sqlOnly(nl2sqlOnly)
+			.build();
+
+		// 标记是否使用 SIMPLE 路径
+		boolean useSimplePath = false;
+
 		// 智能路由：仅对新请求进行分类，人工反馈请求直接走完整流程
 		if (humanFeedbackContent == null || humanFeedbackContent.isEmpty()) {
 			// 分类查询类型
@@ -96,37 +110,22 @@ public class GraphController {
 			// 根据分类结果路由
 			if (queryType == QueryType.SIMPLE) {
 				log.info("Routing to SIMPLE query path for query: '{}'", query);
+				useSimplePath = true;
 				queryService.queryStream(sink, agentId, query);
 			}
 			else {
 				log.info("Routing to COMPLEX analysis path for query: '{}'", query);
-				GraphRequest request = GraphRequest.builder()
-					.agentId(agentId)
-					.threadId(threadId)
-					.query(query)
-					.humanFeedback(humanFeedback)
-					.humanFeedbackContent(humanFeedbackContent)
-					.rejectedPlan(rejectedPlan)
-					.nl2sqlOnly(nl2sqlOnly)
-					.build();
 				graphService.graphStreamProcess(sink, request);
 			}
 		}
 		else {
 			// 人工反馈请求直接走完整流程
 			log.info("Human feedback detected, routing to COMPLEX analysis path");
-			GraphRequest request = GraphRequest.builder()
-				.agentId(agentId)
-				.threadId(threadId)
-				.query(query)
-				.humanFeedback(humanFeedback)
-				.humanFeedbackContent(humanFeedbackContent)
-				.rejectedPlan(rejectedPlan)
-				.nl2sqlOnly(nl2sqlOnly)
-				.build();
 			graphService.graphStreamProcess(sink, request);
 		}
 
+		// 构建返回的 Flux，根据路径类型决定是否需要清理操作
+		final boolean isSimplePath = useSimplePath;
 		return sink.asFlux().filter(sse -> {
 			// 1. 如果 event 是 "complete" 或 "error"，直接放行（不管 text 是否为空）
 			if (STREAM_EVENT_COMPLETE.equals(sse.event()) || STREAM_EVENT_ERROR.equals(sse.event())) {
@@ -135,20 +134,27 @@ public class GraphController {
 			// 判断字符串是否为空
 			return sse.data() != null && sse.data().getText() != null && !sse.data().getText().isEmpty();
 		})
-			.doOnSubscribe(subscription -> log.info("Client subscribed to stream, threadId: {}", request.getThreadId()))
+			.doOnSubscribe(subscription -> log.info("Client subscribed to stream, agentId: {}", agentId))
 			.doOnCancel(() -> {
-				log.info("Client disconnected from stream, threadId: {}", request.getThreadId());
-				if (request.getThreadId() != null) {
+				if (!isSimplePath && request.getThreadId() != null) {
+					log.info("Client disconnected from stream, threadId: {}", request.getThreadId());
 					graphService.stopStreamProcessing(request.getThreadId());
 				}
 			})
 			.doOnError(e -> {
-				log.error("Error occurred during streaming, threadId: {}: ", request.getThreadId(), e);
-				if (request.getThreadId() != null) {
+				if (!isSimplePath && request.getThreadId() != null) {
+					log.error("Error occurred during streaming, threadId: {}: ", request.getThreadId(), e);
 					graphService.stopStreamProcessing(request.getThreadId());
 				}
 			})
-			.doOnComplete(() -> log.info("Stream completed successfully, threadId: {}", request.getThreadId()));
+			.doOnComplete(() -> {
+				if (!isSimplePath) {
+					log.info("Stream completed successfully, threadId: {}", request.getThreadId());
+				}
+				else {
+					log.info("Stream completed successfully (simple path), agentId: {}", agentId);
+				}
+			});
 	}
 
 }
