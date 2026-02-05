@@ -20,6 +20,8 @@ import lombok.Builder;
 import lombok.Data;
 import lombok.NoArgsConstructor;
 
+import java.util.Map;
+
 /**
  * 查询结果元信息
  *
@@ -51,5 +53,11 @@ public class MetaInfo {
 	 * 总记录数
 	 */
 	private Integer totalCount;
+
+	/**
+	 * 嵌套数据计数（每个嵌套表的记录数）
+	 * <p>例如：{"profiles": 8, "education": 1, "work": 1}</p>
+	 */
+	private Map<String, Integer> nestedCounts;
 
 }

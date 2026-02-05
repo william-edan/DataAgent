@@ -19,6 +19,7 @@ import com.alibaba.cloud.ai.dataagent.bo.display.DisplayHint;
 import com.alibaba.cloud.ai.dataagent.bo.display.FieldConfig;
 import com.alibaba.cloud.ai.dataagent.bo.display.FieldGroup;
 import com.alibaba.cloud.ai.dataagent.bo.display.ListModeConfig;
+import com.alibaba.cloud.ai.dataagent.bo.display.NestedConfig;
 import com.alibaba.cloud.ai.dataagent.bo.display.PrimaryConfig;
 import com.alibaba.cloud.ai.dataagent.bo.schema.ResultSetBO;
 import com.alibaba.cloud.ai.dataagent.dto.schema.SchemaDTO;
@@ -123,8 +124,21 @@ public class DisplayHintService {
 			// 推断重要性
 			String importance = inferImportance(lowerColumn, importanceRules);
 
+			// 提取枚举映射（从 schema 中）
+			Map<String, String> enumMapping = extractEnumMapping(schema, column);
+			Map<String, String> colorMapping = null;
+			if (enumMapping != null && !enumMapping.isEmpty()) {
+				colorMapping = generateColorMapping(enumMapping);
+			}
+
 			// 构建字段配置
-			FieldConfig fieldConfig = FieldConfig.builder().label(column).format(format).importance(importance).build();
+			FieldConfig fieldConfig = FieldConfig.builder()
+				.label(column)
+				.format(format)
+				.importance(importance)
+				.mapping(enumMapping)
+				.colorMapping(colorMapping)
+				.build();
 
 			fieldsConfig.put(column, fieldConfig);
 
@@ -349,6 +363,247 @@ public class DisplayHintService {
 			.searchableFields(searchableFields)
 			.sortableFields(sortableFields)
 			.build();
+	}
+
+	/**
+	 * 从 Schema 中提取字段的枚举映射
+	 * 支持通过原始列名或别名（description中的字段名）查找
+	 * 优先使用 ColumnDTO 的 mapping 字段，其次从 description 解析
+	 */
+	private Map<String, String> extractEnumMapping(SchemaDTO schema, String columnName) {
+		if (schema == null || schema.getTable() == null) {
+			return null;
+		}
+
+		// 查找字段并获取映射
+		for (var table : schema.getTable()) {
+			if (table.getColumn() == null) continue;
+
+			for (var column : table.getColumn()) {
+				boolean matched = false;
+
+				// 方式1：直接匹配列名
+				if (columnName.equals(column.getName())) {
+					matched = true;
+				}
+
+				// 方式2：匹配 description 中冒号前的别名（如"员工性别：0女,1男"）
+				if (!matched && column.getDescription() != null) {
+					String description = column.getDescription();
+					int colonIndex = description.indexOf('：');
+					if (colonIndex == -1) {
+						colonIndex = description.indexOf(':');
+					}
+					if (colonIndex > 0) {
+						String alias = description.substring(0, colonIndex).trim();
+						if (columnName.equals(alias)) {
+							matched = true;
+						}
+					}
+				}
+
+				if (matched) {
+					// 优先使用 ColumnDTO 中的 mapping
+					if (column.getMapping() != null && !column.getMapping().isEmpty()) {
+						log.debug("Found mapping for column {} (original: {}): {}",
+							columnName, column.getName(), column.getMapping());
+						return column.getMapping();
+					}
+
+					// 回退：从 description 解析
+					if (column.getDescription() != null) {
+						String description = column.getDescription();
+						int colonIndex = description.indexOf('：');
+						if (colonIndex == -1) {
+							colonIndex = description.indexOf(':');
+						}
+
+						if (colonIndex > 0) {
+							String enumPart = description.substring(colonIndex + 1).trim();
+							Map<String, String> parsed = parseEnumString(enumPart);
+							if (parsed != null && !parsed.isEmpty()) {
+								log.debug("Parsed mapping from description for column {}: {}", columnName, parsed);
+								return parsed;
+							}
+						}
+					}
+				}
+			}
+		}
+
+		return null;
+	}
+
+	/**
+	 * 解析枚举字符串 "0女,1男" -> {0: "女", 1: "男"}
+	 */
+	private Map<String, String> parseEnumString(String enumStr) {
+		Map<String, String> mapping = new HashMap<>();
+		if (enumStr == null || enumStr.isEmpty()) {
+			return mapping;
+		}
+
+		// 按逗号分隔
+		String[] pairs = enumStr.split("[,，]");
+		for (String pair : pairs) {
+			// 查找第一个数字
+			int digitStart = -1;
+			for (int i = 0; i < pair.length(); i++) {
+				if (Character.isDigit(pair.charAt(i))) {
+					digitStart = i;
+					break;
+				}
+			}
+
+			if (digitStart >= 0) {
+				// 提取数字和描述
+				int digitEnd = digitStart;
+				while (digitEnd < pair.length() && Character.isDigit(pair.charAt(digitEnd))) {
+					digitEnd++;
+				}
+
+				String key = pair.substring(digitStart, digitEnd);
+				String value = pair.substring(digitEnd).trim();
+
+				if (!value.isEmpty()) {
+					mapping.put(key, value);
+				}
+			}
+		}
+
+		return mapping;
+	}
+
+	/**
+	 * 根据枚举值生成颜色映射（通用算法）
+	 * <p>
+	 * 策略：
+	 * 1. 如果枚举键是数字序列，按数值大小分配颜色（从低到高：红->橙->蓝->绿）
+	 * 2. 如果枚举键不是数字，按字典序分配颜色
+	 * 3. 颜色池：["blue", "green", "orange", "red", "purple", "cyan", "gray"]
+	 */
+	private Map<String, String> generateColorMapping(Map<String, String> enumMapping) {
+		if (enumMapping == null || enumMapping.isEmpty()) {
+			return null;
+		}
+
+		Map<String, String> colorMapping = new HashMap<>();
+
+		// 颜色池：用于不同枚举项
+		String[] colorPool = {"blue", "green", "orange", "purple", "cyan", "red", "gray"};
+
+		// 尝试解析枚举键为数字并排序
+		List<Map.Entry<String, String>> entries = new ArrayList<>(enumMapping.entrySet());
+		boolean allNumeric = entries.stream().allMatch(e -> {
+			try {
+				Integer.parseInt(e.getKey());
+				return true;
+			} catch (NumberFormatException ex) {
+				return false;
+			}
+		});
+
+		if (allNumeric) {
+			// 按数字大小排序
+			entries.sort((a, b) -> {
+				try {
+					return Integer.parseInt(a.getKey()) - Integer.parseInt(b.getKey());
+				} catch (NumberFormatException e) {
+					return 0;
+				}
+			});
+		} else {
+			// 按字典序排序
+			entries.sort(Map.Entry.comparingByKey());
+		}
+
+		// 根据枚举项数量分配颜色
+		int size = entries.size();
+		for (int i = 0; i < size; i++) {
+			String enumValue = entries.get(i).getValue();
+			String color;
+
+			if (size == 2) {
+				// 2项：蓝色/绿色（或对立色）
+				color = (i == 0) ? "blue" : "green";
+			} else if (size == 3) {
+				// 3项：蓝色/橙色/绿色（低/中/高）
+				color = (i == 0) ? "blue" : (i == 1) ? "orange" : "green";
+			} else if (size == 4) {
+				// 4项：蓝色/橙色/紫色/绿色
+				String[] colors = {"blue", "orange", "purple", "green"};
+				color = colors[i];
+			} else {
+				// 5项及以上：循环使用颜色池
+				color = colorPool[i % colorPool.length];
+			}
+
+			colorMapping.put(enumValue, color);
+		}
+
+		return colorMapping;
+	}
+
+	/**
+	 * 为嵌套数据的字段生成配置
+	 * @param nestedConfigs 嵌套配置
+	 * @param schema Schema 信息
+	 * @return 嵌套字段的配置映射
+	 */
+	public Map<String, FieldConfig> generateNestedFieldConfigs(Map<String, NestedConfig> nestedConfigs, SchemaDTO schema) {
+		Map<String, FieldConfig> nestedFieldsConfig = new HashMap<>();
+
+		if (nestedConfigs == null || nestedConfigs.isEmpty()) {
+			return nestedFieldsConfig;
+		}
+
+		Map<String, List<String>> fieldPatterns = configLoader.getFieldPatterns();
+
+		// 遍历所有嵌套配置
+		for (NestedConfig nestedConfig : nestedConfigs.values()) {
+			if (nestedConfig.getFields() == null) {
+				continue;
+			}
+
+			// 为每个嵌套字段生成配置
+			for (String fieldName : nestedConfig.getFields()) {
+				// 如果已经配置过（可能在主表中），跳过
+				if (nestedFieldsConfig.containsKey(fieldName)) {
+					continue;
+				}
+
+				String lowerFieldName = fieldName.toLowerCase();
+
+				// 推断格式类型
+				String format = inferFormat(lowerFieldName, fieldPatterns);
+
+				// 嵌套字段的重要性默认为 medium
+				String importance = "medium";
+
+				// 提取枚举映射（从 schema 中）
+				Map<String, String> enumMapping = extractEnumMapping(schema, fieldName);
+				Map<String, String> colorMapping = null;
+				if (enumMapping != null && !enumMapping.isEmpty()) {
+					colorMapping = generateColorMapping(enumMapping);
+				}
+
+				// 构建字段配置
+				FieldConfig fieldConfig = FieldConfig.builder()
+					.label(fieldName)
+					.format(format)
+					.importance(importance)
+					.mapping(enumMapping)
+					.colorMapping(colorMapping)
+					.build();
+
+				nestedFieldsConfig.put(fieldName, fieldConfig);
+
+				log.debug("Generated field config for nested field {}: mapping={}, format={}",
+					fieldName, enumMapping, format);
+			}
+		}
+
+		return nestedFieldsConfig;
 	}
 
 }

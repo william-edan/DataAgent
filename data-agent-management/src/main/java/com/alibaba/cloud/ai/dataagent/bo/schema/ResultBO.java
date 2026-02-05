@@ -1,11 +1,11 @@
 /*
- * Copyright 2024-2025 the original author or authors.
+ * Copyright 2024-2026 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *      https://www.apache.org/licenses/LICENSE-2.0
+ *     https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -20,6 +20,9 @@ import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Data;
 import lombok.NoArgsConstructor;
+
+import java.util.List;
+import java.util.Map;
 
 @Data
 @Builder
@@ -40,5 +43,11 @@ public class ResultBO {
 	 * 元信息（记录数、类型等）
 	 */
 	private MetaInfo meta;
+
+	/**
+	 * 嵌套数据（一对多场景）
+	 * <p>键为分组名称（如"教育经历"、"工作经历"），值为该分组下的记录列表</p>
+	 */
+	private Map<String, List<Map<String, String>>> nestedData;
 
 }

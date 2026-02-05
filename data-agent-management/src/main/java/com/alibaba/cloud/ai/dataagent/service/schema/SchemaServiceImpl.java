@@ -410,8 +410,18 @@ public class SchemaServiceImpl implements SchemaService {
 			Map<String, Object> meta = columnDoc.getMetadata();
 			ColumnDTO columnDTO = new ColumnDTO();
 			columnDTO.setName((String) meta.get("name"));
-			columnDTO.setDescription((String) meta.get("description"));
+			String description = (String) meta.get("description");
+			columnDTO.setDescription(description);
 			columnDTO.setType((String) meta.get("type"));
+
+			// 解析字段描述中的枚举映射（格式：字段名：枚举值=枚举描述,枚举值=枚举描述...）
+			if (StringUtils.isNotBlank(description)) {
+				Map<String, String> enumMapping = parseEnumMappingFromDescription(description);
+				if (!enumMapping.isEmpty()) {
+					columnDTO.setMapping(enumMapping);
+					log.debug("Parsed enum mapping for column {}: {}", columnDTO.getName(), enumMapping);
+				}
+			}
 
 			String samplesStr = (String) meta.get("samples");
 			if (StringUtils.isNotBlank(samplesStr)) {
@@ -432,6 +442,76 @@ public class SchemaServiceImpl implements SchemaService {
 				.findFirst()
 				.ifPresent(dto -> dto.getColumn().add(columnDTO));
 		}
+	}
+
+	/**
+	 * 从字段描述中解析枚举映射
+	 * <p>格式：字段名：枚举值=枚举描述,枚举值=枚举描述...</p>
+	 * <p>示例：类型：1教育经历,2工作经历,3相关证书</p>
+	 * @param description 字段描述
+	 * @return 枚举映射（枚举值 -> 枚举描述）
+	 */
+	private Map<String, String> parseEnumMappingFromDescription(String description) {
+		Map<String, String> mapping = new HashMap<>();
+
+		if (StringUtils.isBlank(description)) {
+			return mapping;
+		}
+
+		// 检查是否包含冒号和逗号（枚举映射的特征）
+		if (!description.contains(":") && !description.contains("：")) {
+			return mapping;
+		}
+
+		try {
+			// 分割字段名和枚举列表（支持中英文冒号）
+			String[] parts = description.split("[：:]", 2);
+			if (parts.length != 2) {
+				return mapping;
+			}
+
+			String enumList = parts[1].trim();
+
+			// 分割各个枚举项
+			String[] enumItems = enumList.split("[,，]");
+			for (String item : enumItems) {
+				item = item.trim();
+				if (StringUtils.isBlank(item)) {
+					continue;
+				}
+
+				// 查找枚举值和描述的分界点
+				// 格式：1教育经历 或 1=教育经历
+				String enumValue = null;
+				String enumDesc = null;
+
+				if (item.contains("=")) {
+					// 显式分隔符
+					String[] kv = item.split("=", 2);
+					enumValue = kv[0].trim();
+					enumDesc = kv[1].trim();
+				}
+				else {
+					// 隐式分隔：数字后跟文字
+					// 提取开头的数字或负数
+					java.util.regex.Pattern pattern = java.util.regex.Pattern.compile("^(-?\\d+)(.+)$");
+					java.util.regex.Matcher matcher = pattern.matcher(item);
+					if (matcher.matches()) {
+						enumValue = matcher.group(1);
+						enumDesc = matcher.group(2).trim();
+					}
+				}
+
+				if (StringUtils.isNotBlank(enumValue) && StringUtils.isNotBlank(enumDesc)) {
+					mapping.put(enumValue, enumDesc);
+				}
+			}
+		}
+		catch (Exception e) {
+			log.warn("Failed to parse enum mapping from description: {}", description, e);
+		}
+
+		return mapping;
 	}
 
 	/**

@@ -20,6 +20,8 @@ import lombok.Builder;
 import lombok.Data;
 import lombok.NoArgsConstructor;
 
+import java.util.List;
+
 /**
  * 嵌套数据配置类，用于定义关联数据的展示方式。
  *
@@ -61,5 +63,15 @@ public class NestedConfig {
 	 * 关联关系描述
 	 */
 	private String relation;
+
+	/**
+	 * 分组字段（如："类型"，用于将嵌套数据按类型分组）
+	 */
+	private String groupBy;
+
+	/**
+	 * 字段列表（嵌套数据中要显示的字段）
+	 */
+	private List<String> fields;
 
 }

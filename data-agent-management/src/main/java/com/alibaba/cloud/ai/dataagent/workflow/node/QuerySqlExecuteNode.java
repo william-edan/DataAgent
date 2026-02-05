@@ -17,6 +17,7 @@ package com.alibaba.cloud.ai.dataagent.workflow.node;
 
 import com.alibaba.cloud.ai.dataagent.bo.DbConfigBO;
 import com.alibaba.cloud.ai.dataagent.bo.display.DisplayHint;
+import com.alibaba.cloud.ai.dataagent.bo.display.FieldConfig;
 import com.alibaba.cloud.ai.dataagent.bo.schema.ColumnInfoBO;
 import com.alibaba.cloud.ai.dataagent.bo.schema.MetaInfo;
 import com.alibaba.cloud.ai.dataagent.bo.schema.ResultBO;
@@ -35,6 +36,7 @@ import com.alibaba.cloud.ai.dataagent.util.ChatResponseUtil;
 import com.alibaba.cloud.ai.dataagent.util.DatabaseUtil;
 import com.alibaba.cloud.ai.dataagent.util.FluxUtil;
 import com.alibaba.cloud.ai.dataagent.util.JsonUtil;
+import com.alibaba.cloud.ai.dataagent.util.NestedDataDetector;
 import com.alibaba.cloud.ai.dataagent.util.ResultSetEnricherUtil;
 import com.alibaba.cloud.ai.dataagent.util.StateUtil;
 import com.alibaba.cloud.ai.graph.GraphResponse;
@@ -94,6 +96,9 @@ public class QuerySqlExecuteNode implements NodeAction {
 		int rowCount = resultSetBO.getData() != null ? resultSetBO.getData().size() : 0;
 		log.info("Query SQL executed successfully, rows: {}", rowCount);
 
+		// 保存原始结果集（用于嵌套数据检测，避免字段被过滤）
+		ResultSetBO rawResultSetBO = resultSetBO;
+
 		// 增强查询结果:添加字段说明和枚举值转换 (仅简单查询路径)
 		try {
 			resultSetBO = enrichResultSetWithMetadata(resultSetBO, state);
@@ -102,16 +107,58 @@ public class QuerySqlExecuteNode implements NodeAction {
 			log.warn("Failed to enrich result set with metadata, returning original result", e);
 		}
 
-		// 生成展示提示
-		DisplayHint displayHint = null;
+		// 获取 SchemaDTO (用于后续处理)
 		SchemaDTO schemaDTO = null;
 		try {
 			schemaDTO = StateUtil.getObjectValue(state, TABLE_RELATION_OUTPUT, SchemaDTO.class);
+		}
+		catch (Exception e) {
+			log.warn("Failed to get SchemaDTO from state", e);
+		}
+
+		// 检测嵌套数据（使用原始数据，保留所有字段）
+		NestedDataDetector.NestedDataResult nestedResult = null;
+		try {
+			nestedResult = NestedDataDetector.detectAndRestructure(rawResultSetBO, sqlQuery, schemaDTO);
+			if (nestedResult.isNested()) {
+				log.info("Detected nested data structure, restructuring...");
+			}
+		}
+		catch (Exception e) {
+			log.warn("Failed to detect nested data, treating as flat data", e);
+		}
+
+		// 如果是嵌套数据，使用主表数据生成 displayHint；否则使用原始数据
+		ResultSetBO dataForDisplay = (nestedResult != null && nestedResult.isNested()) ? nestedResult.getMainTableData()
+				: resultSetBO;
+
+		// 生成展示提示
+		DisplayHint displayHint = null;
+		try {
 			String tableName = null;
 			if (schemaDTO != null && schemaDTO.getTable() != null && !schemaDTO.getTable().isEmpty()) {
 				tableName = schemaDTO.getTable().get(0).getName();
 			}
-			displayHint = displayHintService.generate(tableName, resultSetBO, null, schemaDTO);
+			displayHint = displayHintService.generate(tableName, dataForDisplay, null, schemaDTO);
+
+			// 如果是嵌套数据，将嵌套配置合并到 displayHint
+			if (nestedResult != null && nestedResult.isNested() && nestedResult.getNestedConfigs() != null) {
+				displayHint.setNested(nestedResult.getNestedConfigs());
+				log.info("Merged nested configs into displayHint");
+
+				// 为嵌套数据的字段生成配置
+				Map<String, FieldConfig> nestedFieldConfigs = displayHintService
+					.generateNestedFieldConfigs(nestedResult.getNestedConfigs(), schemaDTO);
+				if (nestedFieldConfigs != null && !nestedFieldConfigs.isEmpty()) {
+					// 合并到 displayHint.fields 中
+					if (displayHint.getFields() == null) {
+						displayHint.setFields(new HashMap<>());
+					}
+					displayHint.getFields().putAll(nestedFieldConfigs);
+					log.info("Added {} nested field configs to displayHint", nestedFieldConfigs.size());
+				}
+			}
+
 			log.info("Generated displayHint for table: {}", tableName);
 		}
 		catch (Exception e) {
@@ -119,15 +166,28 @@ public class QuerySqlExecuteNode implements NodeAction {
 		}
 
 		// 构建结构化结果
-		StructuredResultBO structuredResult = StructuredResultBO.builder()
-			.resultSet(resultSetBO)
-			.displayHint(displayHint)
-			.meta(MetaInfo.builder()
-				.recordType(rowCount == 1 ? "single" : "list")
-				.totalCount(rowCount)
-				.hasNestedData(false)
-				.build())
-			.build();
+		StructuredResultBO structuredResult;
+		if (nestedResult != null && nestedResult.isNested()) {
+			// 嵌套数据场景
+			structuredResult = StructuredResultBO.builder()
+				.resultSet(nestedResult.getMainTableData())
+				.nestedData(nestedResult.getNestedData())
+				.displayHint(displayHint)
+				.meta(nestedResult.getMeta())
+				.build();
+		}
+		else {
+			// 普通场景
+			structuredResult = StructuredResultBO.builder()
+				.resultSet(resultSetBO)
+				.displayHint(displayHint)
+				.meta(MetaInfo.builder()
+					.recordType(rowCount == 1 ? "single" : "list")
+					.totalCount(rowCount)
+					.hasNestedData(false)
+					.build())
+				.build();
+		}
 
 		// 构建返回结果
 		Map<String, Object> result = new HashMap<>();
@@ -137,14 +197,13 @@ public class QuerySqlExecuteNode implements NodeAction {
 		result.put(Constant.RESULT, resultSetBO);
 		result.put("STRUCTURED_RESULT", structuredResult);
 
-		// 构建ResultBO对象(前端期望的格式，包含displayHint用于移动端智能渲染)
+		// 构建ResultBO对象(前端期望的格式，包含displayHint和nestedData用于移动端智能渲染)
 		ResultBO resultBO = new ResultBO();
-		resultBO.setResultSet(resultSetBO);
-		// 简单查询不需要图表配置,设置为null
-		resultBO.setDisplayStyle(null);
-		// 设置展示提示和元信息
+		resultBO.setResultSet(structuredResult.getResultSet()); // 使用重构后的数据（如果是嵌套数据，这里是主表数据）
+		resultBO.setDisplayStyle(null); // 简单查询不需要图表配置
 		resultBO.setDisplayHint(displayHint);
 		resultBO.setMeta(structuredResult.getMeta());
+		resultBO.setNestedData(structuredResult.getNestedData()); // 设置嵌套数据
 
 		String resultJson;
 		try {
