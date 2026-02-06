@@ -31,6 +31,15 @@ public interface Nl2SqlService {
 
 	Flux<String> generateSql(SqlGenerationDTO sqlGenerationDTO);
 
+	/**
+	 * Regenerate SQL based on semantic consistency validation feedback. Uses a specialized
+	 * prompt template (semantic-retry.txt) that focuses on logical issues rather than
+	 * database execution errors.
+	 * @param sqlGenerationDTO contains original SQL, semantic feedback, and context
+	 * @return regenerated SQL as a Flux of strings
+	 */
+	Flux<String> regenerateSqlForSemanticFail(SqlGenerationDTO sqlGenerationDTO);
+
 	Flux<ChatResponse> fineSelect(SchemaDTO schemaDTO, String query, String evidence,
 			String sqlGenerateSchemaMissingAdvice, DbConfigBO specificDbConfig, Consumer<SchemaDTO> dtoConsumer);
 

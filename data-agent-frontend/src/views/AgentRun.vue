@@ -191,43 +191,6 @@
           :handleFeedback="handleHumanFeedback"
         />
 
-        <!-- 智能路由调试信息 -->
-        <div
-          v-if="routingDebugInfo.show && currentSession"
-          class="routing-debug-panel"
-          :class="{ 'simple-route': routingDebugInfo.predictedType === 'SIMPLE' }"
-        >
-          <div class="debug-header">
-            <span class="debug-icon">🎯</span>
-            <span class="debug-title">智能路由</span>
-            <el-tag
-              :type="routingDebugInfo.predictedType === 'SIMPLE' ? 'success' : 'warning'"
-              size="small"
-            >
-              {{ routingDebugInfo.predictedType === 'SIMPLE' ? '简单查询' : '复杂分析' }}
-            </el-tag>
-            <span class="debug-path">
-              {{ routingDebugInfo.predictedType === 'SIMPLE' ? 'QueryService' : 'GraphService' }}
-            </span>
-            <el-button text size="small" @click="routingDebugInfo.show = false">
-              <el-icon><Close /></el-icon>
-            </el-button>
-          </div>
-          <div class="debug-body">
-            <div class="debug-info-item">
-              <span class="info-label">查询内容:</span>
-              <span class="info-value">{{ routingDebugInfo.query }}</span>
-            </div>
-            <div class="debug-info-item" v-if="routingDebugInfo.firstNode">
-              <span class="info-label">首个节点:</span>
-              <span class="info-value">{{ routingDebugInfo.firstNode }}</span>
-            </div>
-            <div class="debug-tip">
-              💡 提示: 后端会自动根据查询内容选择最优路径。简单查询走轻量级路径,复杂分析走完整报告流程。
-            </div>
-          </div>
-        </div>
-
         <!-- 输入区域 -->
         <div class="input-area" v-if="currentSession">
           <div class="input-controls">

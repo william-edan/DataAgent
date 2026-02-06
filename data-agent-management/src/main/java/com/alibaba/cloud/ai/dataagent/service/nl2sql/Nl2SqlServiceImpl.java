@@ -82,6 +82,19 @@ public class Nl2SqlServiceImpl implements Nl2SqlService {
 		return newSqlFlux;
 	}
 
+	@Override
+	public Flux<String> regenerateSqlForSemanticFail(SqlGenerationDTO sqlGenerationDTO) {
+		log.info("Regenerating SQL for semantic consistency failure, original SQL: {}, feedback: {}",
+				sqlGenerationDTO.getSql(), sqlGenerationDTO.getExceptionMessage());
+
+		// Use specialized semantic retry prompt
+		String semanticRetryPrompt = PromptHelper.buildSemanticRetryPrompt(sqlGenerationDTO);
+		log.debug("Semantic retry prompt as follows \n {} \n", semanticRetryPrompt);
+		Flux<String> newSqlFlux = llmService.toStringFlux(llmService.callUser(semanticRetryPrompt));
+		log.info("SQL semantic retry generation completed");
+		return newSqlFlux;
+	}
+
 	private Flux<ChatResponse> fineSelect(SchemaDTO schemaDTO, String sqlGenerateSchemaMissingAdvice,
 			Consumer<Set<String>> resultConsumer) {
 		log.debug("Fine selecting tables based on advice: {}", sqlGenerateSchemaMissingAdvice);

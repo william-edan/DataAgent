@@ -15,10 +15,13 @@
  */
 package com.alibaba.cloud.ai.dataagent.dto.prompt;
 
+import com.alibaba.cloud.ai.dataagent.dto.datasource.SqlRetryHistoryItem;
 import com.alibaba.cloud.ai.dataagent.dto.schema.SchemaDTO;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Data;
+
+import java.util.List;
 
 @AllArgsConstructor
 @Builder
@@ -38,5 +41,11 @@ public class SqlGenerationDTO {
 	private String executionDescription;
 
 	private String dialect;
+
+	/**
+	 * History of previous retry attempts. Used to help LLM avoid repeating the same
+	 * mistakes.
+	 */
+	private List<SqlRetryHistoryItem> retryHistory;
 
 }

@@ -69,6 +69,9 @@ public final class Constant {
 	// 重新生成SQL的原因
 	public static final String SQL_REGENERATE_REASON = "SQL_REGENERATE_REASON";
 
+	// SQL重试历史记录（用于避免LLM重复相同的错误）
+	public static final String SQL_RETRY_HISTORY = "SQL_RETRY_HISTORY";
+
 	public static final String SEMANTIC_CONSISTENCY_NODE_OUTPUT = "SEMANTIC_CONSISTENCY_NODE_OUTPUT";
 
 	public static final String PLANNER_NODE_OUTPUT = "PLANNER_NODE_OUTPUT";

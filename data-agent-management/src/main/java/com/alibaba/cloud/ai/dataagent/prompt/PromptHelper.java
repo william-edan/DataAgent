@@ -192,6 +192,45 @@ public class PromptHelper {
 		return PromptConstant.getSqlErrorFixerPromptTemplate().render(params);
 	}
 
+	public static String buildSemanticRetryPrompt(SqlGenerationDTO sqlGenerationDTO) {
+		String schemaInfo = buildMixMacSqlDbPrompt(sqlGenerationDTO.getSchemaDTO(), true);
+
+		Map<String, Object> params = new HashMap<>();
+		params.put("dialect", sqlGenerationDTO.getDialect());
+		params.put("question", sqlGenerationDTO.getQuery());
+		params.put("schema_info", schemaInfo);
+		params.put("evidence", sqlGenerationDTO.getEvidence());
+		params.put("original_sql", sqlGenerationDTO.getSql());
+		params.put("semantic_feedback", sqlGenerationDTO.getExceptionMessage());
+		params.put("execution_description", sqlGenerationDTO.getExecutionDescription());
+		// Build retry history
+		params.put("retry_history", buildRetryHistoryText(sqlGenerationDTO.getRetryHistory()));
+		// Use China timezone (UTC+8) for time calculations
+		ZoneId chinaZone = ZoneId.of("Asia/Shanghai");
+		LocalDate today = LocalDate.now(chinaZone);
+		ZonedDateTime todayStart = today.atStartOfDay(chinaZone);
+		ZonedDateTime todayEnd = today.atTime(23, 59, 59).atZone(chinaZone);
+		params.put("current_time_info", LocalDateTime.now(chinaZone).format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss")));
+		params.put("today_start_timestamp", todayStart.toEpochSecond());
+		params.put("today_end_timestamp", todayEnd.toEpochSecond());
+
+		return PromptConstant.getSemanticRetryPromptTemplate().render(params);
+	}
+
+	/**
+	 * Build retry history text for prompt
+	 */
+	private static String buildRetryHistoryText(java.util.List<com.alibaba.cloud.ai.dataagent.dto.datasource.SqlRetryHistoryItem> retryHistory) {
+		if (retryHistory == null || retryHistory.isEmpty()) {
+			return "(无历史记录，这是首次尝试)";
+		}
+		StringBuilder sb = new StringBuilder();
+		for (var item : retryHistory) {
+			sb.append(item.toPromptFormat()).append("\n\n");
+		}
+		return sb.toString().trim();
+	}
+
 	public static String buildBusinessKnowledgePrompt(String businessTerms) {
 		Map<String, Object> params = new HashMap<>();
 		if (StringUtils.isNotBlank(businessTerms))

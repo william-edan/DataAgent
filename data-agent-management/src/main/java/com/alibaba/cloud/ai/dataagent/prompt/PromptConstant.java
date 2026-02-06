@@ -72,6 +72,10 @@ public class PromptConstant {
 		return new PromptTemplate(PromptLoader.loadPrompt("sql-error-fixer"));
 	}
 
+	public static PromptTemplate getSemanticRetryPromptTemplate() {
+		return new PromptTemplate(PromptLoader.loadPrompt("semantic-retry"));
+	}
+
 	public static PromptTemplate getPythonGeneratorPromptTemplate() {
 		return new PromptTemplate(PromptLoader.loadPrompt("python-generator"));
 	}

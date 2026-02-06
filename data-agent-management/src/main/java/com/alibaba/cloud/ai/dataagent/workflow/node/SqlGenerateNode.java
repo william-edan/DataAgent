@@ -15,6 +15,7 @@
  */
 package com.alibaba.cloud.ai.dataagent.workflow.node;
 
+import com.alibaba.cloud.ai.dataagent.dto.datasource.SqlRetryHistoryItem;
 import com.alibaba.cloud.ai.dataagent.dto.planner.ExecutionStep;
 import com.alibaba.cloud.ai.dataagent.enums.TextType;
 import com.alibaba.cloud.ai.dataagent.util.ChatResponseUtil;
@@ -37,7 +38,9 @@ import org.springframework.ai.chat.model.ChatResponse;
 import org.springframework.stereotype.Component;
 import reactor.core.publisher.Flux;
 
+import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 
 import static com.alibaba.cloud.ai.dataagent.constant.Constant.*;
@@ -110,24 +113,33 @@ public class SqlGenerateNode implements NodeAction {
 		SqlRetryDto retryDto = StateUtil.getObjectValue(state, SQL_REGENERATE_REASON, SqlRetryDto.class,
 				SqlRetryDto.empty());
 
+		// 获取历史重试记录
+		List<SqlRetryHistoryItem> retryHistory = getRetryHistory(state);
+		String originalSql = StateUtil.getStringValue(state, SQL_GENERATE_OUTPUT, "");
+
 		if (retryDto.sqlExecuteFail()) {
 			displayMessage = "检测到SQL执行异常，开始重新生成SQL...";
-			sqlFlux = handleRetryGenerateSql(state, StateUtil.getStringValue(state, SQL_GENERATE_OUTPUT, ""),
-					retryDto.reason(), promptForSql);
+			// 添加到历史记录
+			retryHistory = addToHistory(retryHistory, count, originalSql, retryDto.reason(), "execution");
+			sqlFlux = handleRetryGenerateSqlForExecutionError(state, originalSql, retryDto.reason(), promptForSql);
 		}
 		else if (retryDto.semanticFail()) {
 			displayMessage = "语义一致性校验未通过，开始重新生成SQL...";
-			sqlFlux = handleRetryGenerateSql(state, StateUtil.getStringValue(state, SQL_GENERATE_OUTPUT, ""),
-					retryDto.reason(), promptForSql);
+			// 添加到历史记录
+			retryHistory = addToHistory(retryHistory, count, originalSql, retryDto.reason(), "semantic");
+			sqlFlux = handleRetryGenerateSqlForSemanticFail(state, originalSql, retryDto.reason(), promptForSql, retryHistory);
 		}
 		else {
 			displayMessage = "开始生成SQL...";
+			// 首次生成，清空历史记录
+			retryHistory = new ArrayList<>();
 			sqlFlux = handleGenerateSql(state, promptForSql);
 		}
 
-		// 准备返回结果，同时需要清除一些状态数据
+		// 准备返回结果，同时需要清除一些状态数据，保留历史记录
+		List<SqlRetryHistoryItem> finalRetryHistory = retryHistory;
 		Map<String, Object> result = new HashMap<>(Map.of(SQL_GENERATE_OUTPUT, StateGraph.END, SQL_GENERATE_COUNT,
-				count + 1, SQL_REGENERATE_REASON, SqlRetryDto.empty()));
+				count + 1, SQL_REGENERATE_REASON, SqlRetryDto.empty(), SQL_RETRY_HISTORY, finalRetryHistory));
 
 		// Create display flux for user experience only
 		StringBuilder sqlCollector = new StringBuilder();
@@ -148,14 +160,39 @@ public class SqlGenerateNode implements NodeAction {
 		return Map.of(SQL_GENERATE_OUTPUT, generator);
 	}
 
-	private Flux<String> handleRetryGenerateSql(OverAllState state, String originalSql, String errorMsg,
+	/**
+	 * Handle SQL regeneration for execution errors (database errors like syntax errors,
+	 * missing columns, etc.)
+	 */
+	private Flux<String> handleRetryGenerateSqlForExecutionError(OverAllState state, String originalSql, String errorMsg,
 			String executionDescription) {
+		SqlGenerationDTO sqlGenerationDTO = buildSqlGenerationDTO(state, originalSql, errorMsg, executionDescription, null);
+		return nl2SqlService.generateSql(sqlGenerationDTO);
+	}
+
+	/**
+	 * Handle SQL regeneration for semantic consistency failures (logic issues identified
+	 * by LLM validation)
+	 */
+	private Flux<String> handleRetryGenerateSqlForSemanticFail(OverAllState state, String originalSql,
+			String semanticFeedback, String executionDescription, List<SqlRetryHistoryItem> retryHistory) {
+		SqlGenerationDTO sqlGenerationDTO = buildSqlGenerationDTO(state, originalSql, semanticFeedback, executionDescription, retryHistory);
+		return nl2SqlService.regenerateSqlForSemanticFail(sqlGenerationDTO);
+	}
+
+	private Flux<String> handleGenerateSql(OverAllState state, String executionDescription) {
+		SqlGenerationDTO sqlGenerationDTO = buildSqlGenerationDTO(state, null, null, executionDescription, null);
+		return nl2SqlService.generateSql(sqlGenerationDTO);
+	}
+
+	private SqlGenerationDTO buildSqlGenerationDTO(OverAllState state, String originalSql, String errorMsg,
+			String executionDescription, List<SqlRetryHistoryItem> retryHistory) {
 		String evidence = StateUtil.getStringValue(state, EVIDENCE);
 		SchemaDTO schemaDTO = StateUtil.getObjectValue(state, TABLE_RELATION_OUTPUT, SchemaDTO.class);
 		String userQuery = StateUtil.getCanonicalQuery(state);
 		String dialect = StateUtil.getStringValue(state, DB_DIALECT_TYPE);
 
-		SqlGenerationDTO sqlGenerationDTO = SqlGenerationDTO.builder()
+		return SqlGenerationDTO.builder()
 			.evidence(evidence)
 			.query(userQuery)
 			.schemaDTO(schemaDTO)
@@ -163,13 +200,31 @@ public class SqlGenerateNode implements NodeAction {
 			.exceptionMessage(errorMsg)
 			.executionDescription(executionDescription)
 			.dialect(dialect)
+			.retryHistory(retryHistory)
 			.build();
-
-		return nl2SqlService.generateSql(sqlGenerationDTO);
 	}
 
-	private Flux<String> handleGenerateSql(OverAllState state, String executionDescription) {
-		return handleRetryGenerateSql(state, null, null, executionDescription);
+	/**
+	 * Get retry history from state
+	 */
+	@SuppressWarnings("unchecked")
+	private List<SqlRetryHistoryItem> getRetryHistory(OverAllState state) {
+		return state.value(SQL_RETRY_HISTORY, List.class).map(list -> (List<SqlRetryHistoryItem>) list)
+				.orElse(new ArrayList<>());
+	}
+
+	/**
+	 * Add a new retry attempt to history
+	 */
+	private List<SqlRetryHistoryItem> addToHistory(List<SqlRetryHistoryItem> history, int attemptNumber,
+			String sql, String reason, String type) {
+		List<SqlRetryHistoryItem> newHistory = new ArrayList<>(history);
+		SqlRetryHistoryItem item = "semantic".equals(type)
+				? SqlRetryHistoryItem.semantic(attemptNumber, sql, reason)
+				: SqlRetryHistoryItem.execution(attemptNumber, sql, reason);
+		newHistory.add(item);
+		log.debug("Added retry history item #{}: type={}, sql={}", attemptNumber, type, sql);
+		return newHistory;
 	}
 
 }
