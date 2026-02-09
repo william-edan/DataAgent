@@ -75,7 +75,7 @@ public class NestedDataDetector {
 	private static class GroupByFieldInfo {
 
 		/**
-		 * 原始列名（如：types）
+		 * 结果集中的列名（可能是SQL别名，如：档案类型）
 		 */
 		private String originalName;
 
@@ -83,6 +83,11 @@ public class NestedDataDetector {
 		 * 显示名称（如：类型）
 		 */
 		private String displayName;
+
+		/**
+		 * Schema中的原始列名（如：types），用于Schema查找（如getEnumMapping）
+		 */
+		private String schemaColumnName;
 
 	}
 
@@ -139,9 +144,9 @@ public class NestedDataDetector {
 		String mainTable = primaryRelation.getReferencedTable(); // 主表
 		String childTable = primaryRelation.getTable(); // 子表
 
-		// 查找主表的字段前缀（通过schema找到主表字段）
-		Set<String> mainTableFields = getTableFields(schemaDTO, mainTable);
-		Set<String> childTableFields = getTableFields(schemaDTO, childTable);
+		// 查找主表和子表在结果集中对应的列名（处理SQL别名场景）
+		Set<String> mainTableFields = getTableResultColumns(schemaDTO, mainTable, resultSetBO.getColumn());
+		Set<String> childTableFields = getTableResultColumns(schemaDTO, childTable, resultSetBO.getColumn());
 
 		if (mainTableFields.isEmpty() || childTableFields.isEmpty()) {
 			log.warn("Cannot identify main table or child table fields");
@@ -248,6 +253,48 @@ public class NestedDataDetector {
 			.map(col -> col.getName()) // 使用原始列名（而非中文描述）
 			.filter(StringUtils::isNotBlank)
 			.collect(Collectors.toSet());
+	}
+
+	/**
+	 * 获取表在结果集中对应的列名（处理SQL别名场景）
+	 * <p>当SQL使用了AS别名（如 a.id AS 员工ID）时，结果集的列名是别名而非原始列名。
+	 * 此方法通过匹配Schema列的描述（description）来识别别名列。</p>
+	 *
+	 * @param schemaDTO Schema信息
+	 * @param tableName 表名
+	 * @param resultColumns 结果集的列名列表
+	 * @return 属于该表的结果集列名集合
+	 */
+	private static Set<String> getTableResultColumns(SchemaDTO schemaDTO, String tableName,
+			List<String> resultColumns) {
+		if (schemaDTO.getTable() == null) {
+			return Collections.emptySet();
+		}
+
+		Set<String> result = new LinkedHashSet<>();
+
+		for (TableDTO table : schemaDTO.getTable()) {
+			if (!tableName.equals(table.getName()) || table.getColumn() == null)
+				continue;
+
+			for (com.alibaba.cloud.ai.dataagent.dto.schema.ColumnDTO col : table.getColumn()) {
+				String originalName = col.getName();
+
+				// 直接匹配：结果列名 == 原始列名
+				if (resultColumns.contains(originalName)) {
+					result.add(originalName);
+					continue;
+				}
+
+				// 别名匹配：结果列名 == 列描述（SQL AS别名通常取自描述）
+				String displayName = extractFieldDisplayName(col.getDescription(), originalName);
+				if (!displayName.equals(originalName) && resultColumns.contains(displayName)) {
+					result.add(displayName);
+				}
+			}
+		}
+
+		return result;
 	}
 
 	/**
@@ -384,9 +431,11 @@ public class NestedDataDetector {
 		// 从 SchemaDTO 中查找分组字段（原始列名）
 		GroupByFieldInfo groupByInfo = findGroupByFieldFromSchema(schemaDTO, childTableName, resultSetBO);
 
-		// 获取分组字段的枚举映射（枚举值 -> 枚举描述）
+		// 获取分组字段的枚举映射（枚举值 -> 枚举描述，使用Schema原始列名查找）
 		Map<String, String> enumMapping = (groupByInfo != null)
-				? getEnumMapping(schemaDTO, childTableName, groupByInfo.getOriginalName())
+				? getEnumMapping(schemaDTO, childTableName,
+						groupByInfo.getSchemaColumnName() != null ? groupByInfo.getSchemaColumnName()
+								: groupByInfo.getOriginalName())
 				: Collections.emptyMap();
 
 		Map<String, List<Map<String, String>>> nestedData = new HashMap<>();
@@ -505,23 +554,30 @@ public class NestedDataDetector {
 			String originalName = col.getName();
 			String displayName = extractFieldDisplayName(col.getDescription(), originalName);
 
-			// 只分析结果集中存在的字段（使用原始列名检查）
+			// 查找该字段在结果集中的实际列名（处理SQL别名）
+			String resultColName = originalName;
 			if (!resultSetBO.getColumn().contains(originalName)) {
-				log.debug("Skipping field {} (not in result set columns)", originalName);
-				continue;
+				if (resultSetBO.getColumn().contains(displayName)) {
+					resultColName = displayName;
+				}
+				else {
+					log.debug("Skipping field {} (not in result set columns)", originalName);
+					continue;
+				}
 			}
 
-			// 计算该字段的分组适合度得分
-			int score = calculateGroupByScore(originalName, displayName, resultSetBO, col.getType());
+			// 计算该字段的分组适合度得分（使用结果集列名访问数据）
+			int score = calculateGroupByScore(resultColName, displayName, resultSetBO, col.getType());
 
 			if (score > 0) {
 				GroupByFieldCandidate candidate = new GroupByFieldCandidate();
-				candidate.setOriginalName(originalName);
+				candidate.setOriginalName(resultColName);
 				candidate.setDisplayName(displayName);
+				candidate.setSchemaColumnName(originalName);
 				candidate.setScore(score);
 				candidates.add(candidate);
 
-				log.debug("GroupBy candidate: {} ({}), score: {}", displayName, originalName, score);
+				log.debug("GroupBy candidate: {} ({}), score: {}", displayName, resultColName, score);
 			}
 		}
 
@@ -533,6 +589,7 @@ public class NestedDataDetector {
 			GroupByFieldInfo info = new GroupByFieldInfo();
 			info.setOriginalName(best.getOriginalName());
 			info.setDisplayName(best.getDisplayName());
+			info.setSchemaColumnName(best.getSchemaColumnName());
 
 			log.info("Selected groupBy field: {} ({}), score: {}", best.getDisplayName(), best.getOriginalName(),
 					best.getScore());
@@ -636,6 +693,8 @@ public class NestedDataDetector {
 		private String originalName;
 
 		private String displayName;
+
+		private String schemaColumnName;
 
 		private int score;
 
@@ -767,16 +826,37 @@ public class NestedDataDetector {
 	}
 
 	/**
-	 * 查找主表的主键字段
+	 * 查找主表的主键字段（返回结果集中的列名，处理SQL别名场景）
 	 *
 	 * @param schemaDTO Schema 信息
 	 * @param mainTableName 主表名称
-	 * @param mainTableFields 主表字段集合
+	 * @param mainTableFields 主表字段集合（结果集列名）
 	 * @param resultSetBO 查询结果集
-	 * @return 主键字段名（原始列名），如果找不到则返回 null
+	 * @return 主键字段在结果集中的列名，如果找不到则返回 null
 	 */
 	private static String findPrimaryKeyField(SchemaDTO schemaDTO, String mainTableName, Set<String> mainTableFields,
 			ResultSetBO resultSetBO) {
+
+		// 构建 原始列名 -> 结果集列名 的映射（处理SQL别名）
+		Map<String, String> originalToResultCol = new HashMap<>();
+		if (schemaDTO != null && schemaDTO.getTable() != null) {
+			for (TableDTO table : schemaDTO.getTable()) {
+				if (!mainTableName.equals(table.getName()) || table.getColumn() == null)
+					continue;
+				for (com.alibaba.cloud.ai.dataagent.dto.schema.ColumnDTO col : table.getColumn()) {
+					String original = col.getName();
+					if (resultSetBO.getColumn().contains(original)) {
+						originalToResultCol.put(original, original);
+					}
+					else {
+						String display = extractFieldDisplayName(col.getDescription(), original);
+						if (resultSetBO.getColumn().contains(display)) {
+							originalToResultCol.put(original, display);
+						}
+					}
+				}
+			}
+		}
 
 		// 1. 从 Schema 中查找主表的主键字段
 		if (schemaDTO != null && schemaDTO.getTable() != null) {
@@ -784,12 +864,12 @@ public class NestedDataDetector {
 				if (mainTableName.equals(table.getName())) {
 					List<String> primaryKeys = table.getPrimaryKeys();
 					if (primaryKeys != null && !primaryKeys.isEmpty()) {
-						// 返回第一个主键字段（如果有多个主键，只用第一个）
 						String pkField = primaryKeys.get(0);
-						// 确保主键字段存在于结果集中
-						if (resultSetBO.getColumn().contains(pkField)) {
-							log.info("Found primary key field '{}' for table '{}'", pkField, mainTableName);
-							return pkField;
+						String resultCol = originalToResultCol.get(pkField);
+						if (resultCol != null && resultSetBO.getColumn().contains(resultCol)) {
+							log.info("Found primary key field '{}' (original: '{}') for table '{}'", resultCol,
+									pkField, mainTableName);
+							return resultCol;
 						}
 					}
 					break;
@@ -797,7 +877,12 @@ public class NestedDataDetector {
 			}
 		}
 
-		// 2. 如果没有找到主键，尝试查找 "id" 字段
+		// 2. 如果没有找到主键，尝试查找 "id" 字段（可能被别名化）
+		String idResultCol = originalToResultCol.get("id");
+		if (idResultCol != null && resultSetBO.getColumn().contains(idResultCol)) {
+			log.info("Using 'id' field (as '{}') as primary key for table '{}'", idResultCol, mainTableName);
+			return idResultCol;
+		}
 		for (String field : mainTableFields) {
 			if ("id".equalsIgnoreCase(field) && resultSetBO.getColumn().contains(field)) {
 				log.info("Using 'id' field as primary key for table '{}'", mainTableName);
@@ -806,6 +891,14 @@ public class NestedDataDetector {
 		}
 
 		// 3. 如果还是找不到，尝试查找以 "_id" 结尾的字段
+		for (Map.Entry<String, String> entry : originalToResultCol.entrySet()) {
+			if (entry.getKey().toLowerCase().endsWith("_id")
+					&& resultSetBO.getColumn().contains(entry.getValue())) {
+				log.info("Using '{}' field (as '{}') as primary key for table '{}'", entry.getKey(), entry.getValue(),
+						mainTableName);
+				return entry.getValue();
+			}
+		}
 		for (String field : mainTableFields) {
 			if (field.toLowerCase().endsWith("_id") && resultSetBO.getColumn().contains(field)) {
 				log.info("Using '{}' field as primary key for table '{}'", field, mainTableName);

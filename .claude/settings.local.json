@@ -28,7 +28,9 @@
       "Bash(mvn compile:*)",
       "Bash(mvn checkstyle:check:*)",
       "Bash(mvn spotless:apply:*)",
-      "Bash(npm run build:*)"
+      "Bash(npm run build:*)",
+      "Bash(ls:*)",
+      "Bash(./mvnw.cmd compile:*)"
     ]
   }
 }

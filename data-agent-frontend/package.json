@@ -1,7 +1,7 @@
 {
   "name": "spring-ai-alibaba-data-agent-web-ui",
   "version": "1.0.0",
-  "description": "Spring AI Alibaba Data Agent Web UI based on Vue 3",
+  "description": "Data Agent Web UI based on Vue 3",
   "scripts": {
     "dev": "vite --host 127.0.0.1",
     "build": "vite build",
