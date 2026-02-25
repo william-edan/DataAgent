@@ -232,8 +232,11 @@ public class TableMetadataService {
 			List<ColumnInfoBO> columns) {
 
 		try {
-			// 构建批量查询SQL，一次查询多个列的样本数据
-			String columnNames = columns.stream().map(ColumnInfoBO::getName).collect(Collectors.joining(", "));
+			// 构建批量查询SQL，一次查询多个列的样本数据（对列名加引号，防止保留关键字冲突）
+			String dialectType = dbConfig.getDialectType();
+			String columnNames = columns.stream()
+				.map(col -> SqlUtil.quoteIdentifier(dialectType, col.getName()))
+				.collect(Collectors.joining(", "));
 			String sql = SqlUtil.buildSelectSql(dbConfig.getDialectType(), tableName, columnNames, 5);
 
 			DbQueryParameter batchParam = new DbQueryParameter();

@@ -36,6 +36,7 @@ import com.alibaba.cloud.ai.dataagent.util.ChatResponseUtil;
 import com.alibaba.cloud.ai.dataagent.util.DatabaseUtil;
 import com.alibaba.cloud.ai.dataagent.util.FluxUtil;
 import com.alibaba.cloud.ai.dataagent.util.JsonUtil;
+import com.alibaba.cloud.ai.dataagent.util.ForeignKeyResolverUtil;
 import com.alibaba.cloud.ai.dataagent.util.NestedDataDetector;
 import com.alibaba.cloud.ai.dataagent.util.ResultSetEnricherUtil;
 import com.alibaba.cloud.ai.dataagent.util.StateUtil;
@@ -95,6 +96,14 @@ public class QuerySqlExecuteNode implements NodeAction {
 
 		int rowCount = resultSetBO.getData() != null ? resultSetBO.getData().size() : 0;
 		log.info("Query SQL executed successfully, rows: {}", rowCount);
+
+		// 解析FK外键字段：将ID值转换为可读名称（在enrichment之前，此时列名仍为原始列名）
+		try {
+			resultSetBO = ForeignKeyResolverUtil.resolveForeignKeys(resultSetBO, dbAccessor, dbConfig);
+		}
+		catch (Exception e) {
+			log.warn("Failed to resolve foreign key values, continuing with original data", e);
+		}
 
 		// 保存原始结果集（用于嵌套数据检测，避免字段被过滤）
 		ResultSetBO rawResultSetBO = resultSetBO;

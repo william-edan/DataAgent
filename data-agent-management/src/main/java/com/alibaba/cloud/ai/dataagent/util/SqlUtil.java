@@ -16,6 +16,7 @@
 package com.alibaba.cloud.ai.dataagent.util;
 
 import com.alibaba.cloud.ai.dataagent.enums.BizDataSourceTypeEnum;
+import com.alibaba.cloud.ai.dataagent.enums.DatabaseDialectEnum;
 import lombok.experimental.UtilityClass;
 
 /**
@@ -26,6 +27,29 @@ import lombok.experimental.UtilityClass;
  */
 @UtilityClass
 public class SqlUtil {
+
+	/**
+	 * 对SQL标识符（列名、表名）进行引号包裹，防止保留关键字冲突
+	 * @param typeName 数据源类型
+	 * @param identifier 标识符名称
+	 * @return 包裹后的标识符
+	 */
+	public static String quoteIdentifier(String typeName, String identifier) {
+		if (identifier == null || identifier.isEmpty() || "*".equals(identifier)) {
+			return identifier;
+		}
+		if (BizDataSourceTypeEnum.isSqlServerDialect(typeName)) {
+			return "[" + identifier + "]";
+		}
+		else if (BizDataSourceTypeEnum.isPgDialect(typeName)
+				|| BizDataSourceTypeEnum.isDialect(typeName, DatabaseDialectEnum.DAMENG.getCode())) {
+			return "\"" + identifier + "\"";
+		}
+		else {
+			// MySQL, SQLite, H2 使用反引号
+			return "`" + identifier + "`";
+		}
+	}
 
 	/**
 	 * 构建SELECT SQL语句
