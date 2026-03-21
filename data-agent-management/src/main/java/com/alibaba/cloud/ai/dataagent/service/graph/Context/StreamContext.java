@@ -39,6 +39,12 @@ public class StreamContext {
 
 	private TextType textType;
 
+	private String sessionId;
+
+	private String currentUserInput;
+
+	private final StringBuilder assistantResponse = new StringBuilder();
+
 	/**
 	 * 标记是否已经清理，用于防止重复清理
 	 */
@@ -47,6 +53,36 @@ public class StreamContext {
 	/**
 	 * 清理所有资源 线程安全：使用 AtomicBoolean 确保只执行一次
 	 */
+	public synchronized void startTurn(String userInput) {
+		if (userInput != null && !userInput.isBlank()) {
+			this.currentUserInput = userInput.trim();
+		}
+		this.assistantResponse.setLength(0);
+	}
+
+	public synchronized void appendAssistantResponse(String chunk) {
+		if (chunk == null || chunk.isBlank()) {
+			return;
+		}
+		this.assistantResponse.append(chunk);
+	}
+
+	public synchronized String buildRuntimeConversation() {
+		String userInput = currentUserInput == null ? "" : currentUserInput.trim();
+		String assistantOutput = assistantResponse.toString().trim();
+		StringBuilder conversation = new StringBuilder();
+		if (!userInput.isEmpty()) {
+			conversation.append("USER: ").append(userInput);
+		}
+		if (!assistantOutput.isEmpty()) {
+			if (conversation.length() > 0) {
+				conversation.append('\n');
+			}
+			conversation.append("ASSISTANT: ").append(assistantOutput);
+		}
+		return conversation.toString();
+	}
+
 	public void cleanup() {
 		// 使用 compareAndSet 确保只执行一次清理
 		if (!cleaned.compareAndSet(false, true)) {

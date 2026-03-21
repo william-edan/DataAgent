@@ -42,6 +42,8 @@ public class SqlGenerationDTO {
 
 	private String dialect;
 
+	private String sqlMemoryAdvice;
+
 	/**
 	 * History of previous retry attempts. Used to help LLM avoid repeating the same
 	 * mistakes.

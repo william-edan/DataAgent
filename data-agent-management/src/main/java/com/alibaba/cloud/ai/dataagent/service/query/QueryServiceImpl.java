@@ -17,6 +17,7 @@ package com.alibaba.cloud.ai.dataagent.service.query;
 
 import com.alibaba.cloud.ai.dataagent.bo.schema.ResultSetBO;
 import com.alibaba.cloud.ai.dataagent.enums.TextType;
+import com.alibaba.cloud.ai.dataagent.service.memory.ConversationMemoryCoordinator;
 import com.alibaba.cloud.ai.dataagent.util.StateUtil;
 import com.alibaba.cloud.ai.dataagent.vo.GraphNodeResponse;
 import com.alibaba.cloud.ai.dataagent.vo.QueryResultVO;
@@ -33,9 +34,11 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.http.codec.ServerSentEvent;
 import org.springframework.stereotype.Service;
+import org.springframework.util.StringUtils;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Sinks;
 
+import java.util.HashMap;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicReference;
@@ -45,6 +48,7 @@ import static com.alibaba.cloud.ai.dataagent.constant.Constant.INPUT_KEY;
 import static com.alibaba.cloud.ai.dataagent.constant.Constant.MULTI_TURN_CONTEXT;
 import static com.alibaba.cloud.ai.dataagent.constant.Constant.QUERY_SQL;
 import static com.alibaba.cloud.ai.dataagent.constant.Constant.QUERY_SQL_RESULT;
+import static com.alibaba.cloud.ai.dataagent.constant.Constant.SESSION_ID;
 import static com.alibaba.cloud.ai.dataagent.constant.Constant.STREAM_EVENT_COMPLETE;
 import static com.alibaba.cloud.ai.dataagent.constant.Constant.STREAM_EVENT_ERROR;
 
@@ -54,8 +58,12 @@ public class QueryServiceImpl implements QueryService {
 
 	private final CompiledGraph compiledGraph;
 
-	public QueryServiceImpl(@Qualifier("queryGraph") StateGraph queryGraph) throws GraphStateException {
+	private final ConversationMemoryCoordinator conversationMemoryCoordinator;
+
+	public QueryServiceImpl(@Qualifier("queryGraph") StateGraph queryGraph,
+			ConversationMemoryCoordinator conversationMemoryCoordinator) throws GraphStateException {
 		this.compiledGraph = queryGraph.compile(CompileConfig.builder().build());
+		this.conversationMemoryCoordinator = conversationMemoryCoordinator;
 	}
 
 	@Override
@@ -72,47 +80,49 @@ public class QueryServiceImpl implements QueryService {
 	}
 
 	@Override
-	public void queryStream(Sinks.Many<ServerSentEvent<GraphNodeResponse>> sink, String agentId,
-			String naturalQuery) {
-		String threadId = UUID.randomUUID().toString();
-		log.info("Starting query stream for agentId: {}, threadId: {}, query: '{}'", agentId, threadId, naturalQuery);
+	public void queryStream(Sinks.Many<ServerSentEvent<GraphNodeResponse>> sink, String agentId, String sessionId,
+			String threadId, String naturalQuery) {
+		String effectiveThreadId = StringUtils.hasText(threadId) ? threadId : UUID.randomUUID().toString();
+		log.info("Starting query stream for agentId: {}, threadId: {}, query: '{}'", agentId, effectiveThreadId,
+				naturalQuery);
 
 		try {
-			// 用于跟踪当前文本类型
 			AtomicReference<TextType> currentTextType = new AtomicReference<>(null);
+			StringBuilder assistantResponse = new StringBuilder();
+			Map<String, Object> state = new HashMap<>();
+			state.put(INPUT_KEY, naturalQuery);
+			state.put(AGENT_ID, agentId);
+			state.put(MULTI_TURN_CONTEXT, "");
+			if (StringUtils.hasText(sessionId)) {
+				state.put(SESSION_ID, sessionId);
+			}
 
-			// 创建查询图的流式输出
-			Flux<NodeOutput> nodeOutputFlux = compiledGraph.stream(
-					Map.of(INPUT_KEY, naturalQuery, AGENT_ID, agentId, MULTI_TURN_CONTEXT, ""),
-					RunnableConfig.builder().threadId(threadId).build());
+			Flux<NodeOutput> nodeOutputFlux = compiledGraph.stream(state,
+					RunnableConfig.builder().threadId(effectiveThreadId).build());
 
-			// 订阅并处理节点输出
-			nodeOutputFlux.subscribe(output -> handleNodeOutput(sink, agentId, threadId, output, currentTextType),
-					error -> handleStreamError(sink, agentId, threadId, error),
-					() -> handleStreamComplete(sink, agentId, threadId));
+			nodeOutputFlux.subscribe(
+					output -> handleNodeOutput(sink, agentId, effectiveThreadId, output, currentTextType, assistantResponse),
+					error -> handleStreamError(sink, agentId, effectiveThreadId, error),
+					() -> handleStreamComplete(sink, agentId, effectiveThreadId, sessionId,
+							renderRuntimeConversation(naturalQuery, assistantResponse.toString())));
 
 		}
 		catch (Exception e) {
-			log.error("Failed to start query stream for threadId: {}", threadId, e);
-			handleStreamError(sink, agentId, threadId, e);
+			log.error("Failed to start query stream for threadId: {}", effectiveThreadId, e);
+			handleStreamError(sink, agentId, effectiveThreadId, e);
 		}
 	}
 
-	/**
-	 * 处理节点输出
-	 */
 	private void handleNodeOutput(Sinks.Many<ServerSentEvent<GraphNodeResponse>> sink, String agentId, String threadId,
-			NodeOutput output, AtomicReference<TextType> currentTextType) {
+			NodeOutput output, AtomicReference<TextType> currentTextType, StringBuilder assistantResponse) {
 		if (output instanceof StreamingOutput streamingOutput) {
-			handleStreamingOutput(sink, agentId, threadId, streamingOutput, currentTextType);
+			handleStreamingOutput(sink, agentId, threadId, streamingOutput, currentTextType, assistantResponse);
 		}
 	}
 
-	/**
-	 * 处理流式输出
-	 */
 	private void handleStreamingOutput(Sinks.Many<ServerSentEvent<GraphNodeResponse>> sink, String agentId,
-			String threadId, StreamingOutput output, AtomicReference<TextType> currentTextType) {
+			String threadId, StreamingOutput output, AtomicReference<TextType> currentTextType,
+			StringBuilder assistantResponse) {
 		String node = output.node();
 		String chunk = output.chunk();
 
@@ -120,13 +130,12 @@ public class QueryServiceImpl implements QueryService {
 			return;
 		}
 
-		// 处理文本类型标记
 		TextType textType = determineTextType(chunk, currentTextType);
 		boolean isTypeSign = isTextTypeSignal(chunk, currentTextType.get(), textType);
 		currentTextType.set(textType);
 
-		// 文本标记符号不返回给前端
 		if (!isTypeSign) {
+			assistantResponse.append(chunk);
 			GraphNodeResponse response = GraphNodeResponse.builder()
 				.agentId(agentId)
 				.threadId(threadId)
@@ -142,34 +151,21 @@ public class QueryServiceImpl implements QueryService {
 		}
 	}
 
-	/**
-	 * 确定文本类型
-	 */
 	private TextType determineTextType(String chunk, AtomicReference<TextType> currentTextType) {
 		TextType originType = currentTextType.get();
 		if (originType == null) {
 			return TextType.getTypeByStratSign(chunk);
 		}
-		else {
-			return TextType.getType(originType, chunk);
-		}
+		return TextType.getType(originType, chunk);
 	}
 
-	/**
-	 * 判断是否是文本类型标记符号
-	 */
 	private boolean isTextTypeSignal(String chunk, TextType originType, TextType newType) {
 		if (originType == null) {
 			return newType != TextType.TEXT;
 		}
-		else {
-			return newType != originType;
-		}
+		return newType != originType;
 	}
 
-	/**
-	 * 处理流式错误
-	 */
 	private void handleStreamError(Sinks.Many<ServerSentEvent<GraphNodeResponse>> sink, String agentId,
 			String threadId, Throwable error) {
 		log.error("Error in query stream processing for threadId: {}", threadId, error);
@@ -183,18 +179,31 @@ public class QueryServiceImpl implements QueryService {
 		}
 	}
 
-	/**
-	 * 处理流式完成
-	 */
 	private void handleStreamComplete(Sinks.Many<ServerSentEvent<GraphNodeResponse>> sink, String agentId,
-			String threadId) {
+			String threadId, String sessionId, String runtimeConversation) {
 		log.info("Query stream processing completed successfully for threadId: {}", threadId);
+		conversationMemoryCoordinator.finalizeTurn(agentId, sessionId, threadId, null, runtimeConversation);
 
 		if (sink != null && sink.currentSubscriberCount() > 0) {
-			sink.tryEmitNext(
-					ServerSentEvent.builder(GraphNodeResponse.complete(agentId, threadId)).event(STREAM_EVENT_COMPLETE).build());
+			sink.tryEmitNext(ServerSentEvent.builder(GraphNodeResponse.complete(agentId, threadId))
+				.event(STREAM_EVENT_COMPLETE)
+				.build());
 			sink.tryEmitComplete();
 		}
+	}
+
+	private String renderRuntimeConversation(String userInput, String assistantOutput) {
+		StringBuilder conversation = new StringBuilder();
+		if (StringUtils.hasText(userInput)) {
+			conversation.append("USER: ").append(userInput.trim());
+		}
+		if (StringUtils.hasText(assistantOutput)) {
+			if (conversation.length() > 0) {
+				conversation.append('\n');
+			}
+			conversation.append("ASSISTANT: ").append(assistantOutput.trim());
+		}
+		return conversation.toString();
 	}
 
 }

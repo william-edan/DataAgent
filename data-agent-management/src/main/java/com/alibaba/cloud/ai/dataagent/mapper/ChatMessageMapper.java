@@ -33,6 +33,17 @@ public interface ChatMessageMapper {
 			""")
 	List<ChatMessage> selectBySessionId(@Param("sessionId") String sessionId);
 
+	@Select("""
+			SELECT * FROM (
+				SELECT * FROM chat_message
+				WHERE session_id = #{sessionId}
+				ORDER BY create_time DESC
+				LIMIT #{limit}
+			) recent_messages
+			ORDER BY create_time ASC
+			""")
+	List<ChatMessage> selectRecentBySessionId(@Param("sessionId") String sessionId, @Param("limit") int limit);
+
 	/**
 	 * Query by id
 	 */

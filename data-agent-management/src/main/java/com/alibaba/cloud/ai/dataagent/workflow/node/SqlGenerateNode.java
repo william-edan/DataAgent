@@ -26,6 +26,9 @@ import com.alibaba.cloud.ai.dataagent.properties.DataAgentProperties;
 import com.alibaba.cloud.ai.dataagent.dto.datasource.SqlRetryDto;
 import com.alibaba.cloud.ai.dataagent.dto.prompt.SqlGenerationDTO;
 import com.alibaba.cloud.ai.dataagent.dto.schema.SchemaDTO;
+import com.alibaba.cloud.ai.dataagent.service.memory.SqlMemoryEnhancer;
+import com.alibaba.cloud.ai.dataagent.service.memory.model.SqlMemoryBlock;
+import com.alibaba.cloud.ai.dataagent.service.memory.SqlMemoryService;
 import com.alibaba.cloud.ai.dataagent.service.nl2sql.Nl2SqlService;
 import com.alibaba.cloud.ai.graph.GraphResponse;
 import com.alibaba.cloud.ai.graph.OverAllState;
@@ -64,6 +67,10 @@ public class SqlGenerateNode implements NodeAction {
 	private final Nl2SqlService nl2SqlService;
 
 	private final DataAgentProperties properties;
+
+	private final SqlMemoryService sqlMemoryService;
+
+	private final SqlMemoryEnhancer sqlMemoryEnhancer;
 
 	@Override
 	public Map<String, Object> apply(OverAllState state) throws Exception {
@@ -187,10 +194,15 @@ public class SqlGenerateNode implements NodeAction {
 
 	private SqlGenerationDTO buildSqlGenerationDTO(OverAllState state, String originalSql, String errorMsg,
 			String executionDescription, List<SqlRetryHistoryItem> retryHistory) {
+		String agentId = StateUtil.getStringValue(state, AGENT_ID, "");
 		String evidence = StateUtil.getStringValue(state, EVIDENCE);
 		SchemaDTO schemaDTO = StateUtil.getObjectValue(state, TABLE_RELATION_OUTPUT, SchemaDTO.class);
 		String userQuery = StateUtil.getCanonicalQuery(state);
 		String dialect = StateUtil.getStringValue(state, DB_DIALECT_TYPE);
+		SqlMemoryBlock sqlMemoryBlock = sqlMemoryService.loadSqlMemory(agentId);
+		String sqlMemoryAdvice = sqlMemoryEnhancer.enhance(sqlMemoryService.findSimilarSuccess(agentId, userQuery, 3),
+				sqlMemoryService.findSimilarError(agentId, userQuery, 2), sqlMemoryBlock.successSummaries(),
+				sqlMemoryBlock.errorSummaries());
 
 		return SqlGenerationDTO.builder()
 			.evidence(evidence)
@@ -200,6 +212,7 @@ public class SqlGenerateNode implements NodeAction {
 			.exceptionMessage(errorMsg)
 			.executionDescription(executionDescription)
 			.dialect(dialect)
+			.sqlMemoryAdvice(sqlMemoryAdvice)
 			.retryHistory(retryHistory)
 			.build();
 	}

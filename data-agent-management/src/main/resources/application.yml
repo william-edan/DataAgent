@@ -54,6 +54,19 @@ spring:
             endpoint: ${OSS_ENDPOINT:}
             bucket-name: ${OSS_BUCKET_NAME:}
             custom-domain: ${OSS_CUSTOM_DOMAIN:}
+        memory:
+          path: memory
+          max-entries-per-category: 100
+          max-sql-case-count: 100
+          recent-message-limit: 8
+          summary-trigger-message-count: 6
+          conversation-section-max-chars: 4000
+          long-term-section-max-chars: 2000
+          sql-advice-section-max-chars: 2000
+          max-document-size-bytes: 8192
+          compaction-entry-threshold: 5
+          compaction-target-entries-per-category: 2
+          compaction-target-sql-case-count: 2
         max-sql-retry-count: 5
   servlet:
     multipart:

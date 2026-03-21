@@ -122,6 +122,7 @@ public class PromptHelper {
 		params.put("question", sqlGenerationDTO.getQuery());
 		params.put("schema_info", schemaInfo);
 		params.put("evidence", sqlGenerationDTO.getEvidence());
+		params.put("sql_memory_advice", StringUtils.defaultIfBlank(sqlGenerationDTO.getSqlMemoryAdvice(), ""));
 		params.put("execution_description", sqlGenerationDTO.getExecutionDescription());
 		// Use China timezone (UTC+8) for time calculations
 		ZoneId chinaZone = ZoneId.of("Asia/Shanghai");
@@ -177,6 +178,7 @@ public class PromptHelper {
 		params.put("question", sqlGenerationDTO.getQuery());
 		params.put("schema_info", schemaInfo);
 		params.put("evidence", sqlGenerationDTO.getEvidence());
+		params.put("sql_memory_advice", StringUtils.defaultIfBlank(sqlGenerationDTO.getSqlMemoryAdvice(), ""));
 		params.put("error_sql", sqlGenerationDTO.getSql());
 		params.put("error_message", sqlGenerationDTO.getExceptionMessage());
 		params.put("execution_description", sqlGenerationDTO.getExecutionDescription());
@@ -200,6 +202,7 @@ public class PromptHelper {
 		params.put("question", sqlGenerationDTO.getQuery());
 		params.put("schema_info", schemaInfo);
 		params.put("evidence", sqlGenerationDTO.getEvidence());
+		params.put("sql_memory_advice", StringUtils.defaultIfBlank(sqlGenerationDTO.getSqlMemoryAdvice(), ""));
 		params.put("original_sql", sqlGenerationDTO.getSql());
 		params.put("semantic_feedback", sqlGenerationDTO.getExceptionMessage());
 		params.put("execution_description", sqlGenerationDTO.getExecutionDescription());

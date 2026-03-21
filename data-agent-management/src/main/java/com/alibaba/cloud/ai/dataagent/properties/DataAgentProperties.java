@@ -40,6 +40,8 @@ public class DataAgentProperties {
 
 	private ReportTemplate reportTemplate = new ReportTemplate();
 
+	private Memory memory = new Memory();
+
 	/**
 	 * sql执行失败重试次数
 	 */
@@ -79,6 +81,36 @@ public class DataAgentProperties {
 	 * 执行SQL结果图表化超时时间，默认3000ms
 	 */
 	private Long enrichSqlResultTimeout = 3000L;
+
+	@Getter
+	@Setter
+	public static class Memory {
+
+		private String path = "memory";
+
+		private int maxEntriesPerCategory = 100;
+
+		private int maxSqlCaseCount = 100;
+
+		private int recentMessageLimit = 8;
+
+		private int summaryTriggerMessageCount = 6;
+
+		private int conversationSectionMaxChars = 4000;
+
+		private int longTermSectionMaxChars = 2000;
+
+		private int sqlAdviceSectionMaxChars = 2000;
+
+		private int maxDocumentSizeBytes = 262144;
+
+		private int compactionEntryThreshold = 80;
+
+		private int compactionTargetEntriesPerCategory = 40;
+
+		private int compactionTargetSqlCaseCount = 20;
+
+	}
 
 	@Getter
 	@Setter

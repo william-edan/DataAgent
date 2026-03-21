@@ -18,8 +18,15 @@ package com.alibaba.cloud.ai.dataagent.service.graph;
 import com.alibaba.cloud.ai.dataagent.enums.TextType;
 import com.alibaba.cloud.ai.dataagent.workflow.node.PlannerNode;
 import com.alibaba.cloud.ai.dataagent.dto.GraphRequest;
+import com.alibaba.cloud.ai.dataagent.entity.ChatMessage;
+import com.alibaba.cloud.ai.dataagent.properties.DataAgentProperties;
+import com.alibaba.cloud.ai.dataagent.service.chat.ChatMessageService;
 import com.alibaba.cloud.ai.dataagent.service.graph.Context.MultiTurnContextManager;
 import com.alibaba.cloud.ai.dataagent.service.graph.Context.StreamContext;
+import com.alibaba.cloud.ai.dataagent.service.memory.ConversationMemoryCoordinator;
+import com.alibaba.cloud.ai.dataagent.service.memory.LongTermMemoryService;
+import com.alibaba.cloud.ai.dataagent.service.memory.PromptEnhancer;
+import com.alibaba.cloud.ai.dataagent.service.memory.model.AgentMemoryDocument;
 import com.alibaba.cloud.ai.dataagent.vo.GraphNodeResponse;
 import com.alibaba.cloud.ai.graph.*;
 import com.alibaba.cloud.ai.graph.exception.GraphRunnerException;
@@ -34,6 +41,7 @@ import reactor.core.publisher.Flux;
 import reactor.core.publisher.Sinks;
 
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
@@ -54,11 +62,29 @@ public class GraphServiceImpl implements GraphService {
 
 	private final MultiTurnContextManager multiTurnContextManager;
 
+	private final ChatMessageService chatMessageService;
+
+	private final LongTermMemoryService longTermMemoryService;
+
+	private final PromptEnhancer promptEnhancer;
+
+	private final DataAgentProperties properties;
+
+	private final ConversationMemoryCoordinator conversationMemoryCoordinator;
+
 	public GraphServiceImpl(StateGraph stateGraph, ExecutorService executorService,
-			MultiTurnContextManager multiTurnContextManager) throws GraphStateException {
+			MultiTurnContextManager multiTurnContextManager, ChatMessageService chatMessageService,
+			LongTermMemoryService longTermMemoryService, PromptEnhancer promptEnhancer,
+			DataAgentProperties properties, ConversationMemoryCoordinator conversationMemoryCoordinator)
+			throws GraphStateException {
 		this.compiledGraph = stateGraph.compile(CompileConfig.builder().interruptBefore(HUMAN_FEEDBACK_NODE).build());
 		this.executor = executorService;
 		this.multiTurnContextManager = multiTurnContextManager;
+		this.chatMessageService = chatMessageService;
+		this.longTermMemoryService = longTermMemoryService;
+		this.promptEnhancer = promptEnhancer;
+		this.properties = properties;
+		this.conversationMemoryCoordinator = conversationMemoryCoordinator;
 	}
 
 	@Override
@@ -79,6 +105,8 @@ public class GraphServiceImpl implements GraphService {
 		// 创建或获取 StreamContext
 		StreamContext context = streamContextMap.computeIfAbsent(threadId, k -> new StreamContext());
 		context.setSink(sink);
+		context.setSessionId(graphRequest.getSessionId());
+		context.startTurn(graphRequest.getQuery());
 		if (StringUtils.hasText(graphRequest.getHumanFeedbackContent())) {
 			handleHumanFeedback(graphRequest);
 		}
@@ -124,12 +152,29 @@ public class GraphServiceImpl implements GraphService {
 			return;
 		}
 		String multiTurnContext = multiTurnContextManager.buildContext(threadId);
+		List<ChatMessage> recentMessages = loadRecentMessages(graphRequest.getSessionId());
+		AgentMemoryDocument memoryDocument = longTermMemoryService.load(agentId);
+		String enhancedContext = promptEnhancer.enhance(recentMessages, multiTurnContext, memoryDocument, query);
 		multiTurnContextManager.beginTurn(threadId, query);
-		Flux<NodeOutput> nodeOutputFlux = compiledGraph.stream(
-				Map.of(IS_ONLY_NL2SQL, nl2sqlOnly, INPUT_KEY, query, AGENT_ID, agentId, HUMAN_REVIEW_ENABLED,
-						humanReviewEnabled, MULTI_TURN_CONTEXT, multiTurnContext),
+		Map<String, Object> state = new HashMap<>();
+		state.put(IS_ONLY_NL2SQL, nl2sqlOnly);
+		state.put(INPUT_KEY, query);
+		state.put(AGENT_ID, agentId);
+		state.put(HUMAN_REVIEW_ENABLED, humanReviewEnabled);
+		state.put(MULTI_TURN_CONTEXT, enhancedContext);
+		if (StringUtils.hasText(graphRequest.getSessionId())) {
+			state.put(SESSION_ID, graphRequest.getSessionId());
+		}
+		Flux<NodeOutput> nodeOutputFlux = compiledGraph.stream(state,
 				RunnableConfig.builder().threadId(threadId).build());
 		subscribeToFlux(context, nodeOutputFlux, graphRequest, agentId, threadId);
+	}
+
+	private List<ChatMessage> loadRecentMessages(String sessionId) {
+		if (!StringUtils.hasText(sessionId)) {
+			return List.of();
+		}
+		return chatMessageService.findRecentBySessionId(sessionId, properties.getMemory().getRecentMessageLimit());
 	}
 
 	private void handleHumanFeedback(GraphRequest graphRequest) {
@@ -234,8 +279,10 @@ public class GraphServiceImpl implements GraphService {
 	 */
 	private void handleStreamComplete(String agentId, String threadId) {
 		log.info("Stream processing completed successfully for threadId: {}", threadId);
-		multiTurnContextManager.finishTurn(threadId);
 		StreamContext context = streamContextMap.remove(threadId);
+		multiTurnContextManager.finishTurn(threadId);
+		conversationMemoryCoordinator.finalizeTurn(agentId, context != null ? context.getSessionId() : null, threadId,
+				null, context != null ? context.buildRuntimeConversation() : null);
 		if (context != null && !context.isCleaned() && context.getSink() != null) {
 			if (context.getSink().currentSubscriberCount() > 0) {
 				context.getSink()
@@ -297,6 +344,7 @@ public class GraphServiceImpl implements GraphService {
 			if (PlannerNode.class.getSimpleName().equals(node)) {
 				multiTurnContextManager.appendPlannerChunk(threadId, chunk);
 			}
+			context.appendAssistantResponse(chunk);
 			GraphNodeResponse response = GraphNodeResponse.builder()
 				.agentId(request.getAgentId())
 				.threadId(threadId)

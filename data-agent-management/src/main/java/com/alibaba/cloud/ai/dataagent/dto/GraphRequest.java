@@ -28,6 +28,8 @@ public class GraphRequest {
 
 	private String agentId;
 
+	private String sessionId;
+
 	private String threadId;
 
 	private String query;

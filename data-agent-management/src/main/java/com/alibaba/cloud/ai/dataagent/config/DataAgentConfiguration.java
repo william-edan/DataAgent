@@ -242,6 +242,8 @@ public class DataAgentConfiguration implements DisposableBean {
 			keyStrategyHashMap.put(INPUT_KEY, KeyStrategy.REPLACE);
 			// Agent ID
 			keyStrategyHashMap.put(AGENT_ID, KeyStrategy.REPLACE);
+			// Session ID
+			keyStrategyHashMap.put(SESSION_ID, KeyStrategy.REPLACE);
 			// Multi-turn context
 			keyStrategyHashMap.put(MULTI_TURN_CONTEXT, KeyStrategy.REPLACE);
 			// Intent recognition

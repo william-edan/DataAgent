@@ -20,6 +20,8 @@ import com.alibaba.cloud.ai.dataagent.util.StateUtil;
 import com.alibaba.cloud.ai.dataagent.dto.datasource.SqlRetryDto;
 import com.alibaba.cloud.ai.dataagent.dto.prompt.SemanticConsistencyDTO;
 import com.alibaba.cloud.ai.dataagent.dto.schema.SchemaDTO;
+import com.alibaba.cloud.ai.dataagent.service.memory.SqlErrorAnalyzer;
+import com.alibaba.cloud.ai.dataagent.service.memory.SqlMemoryService;
 import com.alibaba.cloud.ai.dataagent.service.nl2sql.Nl2SqlService;
 import com.alibaba.cloud.ai.graph.GraphResponse;
 import com.alibaba.cloud.ai.graph.OverAllState;
@@ -52,6 +54,10 @@ import static com.alibaba.cloud.ai.dataagent.prompt.PromptHelper.buildMixMacSqlD
 public class SemanticConsistencyNode implements NodeAction {
 
 	private final Nl2SqlService nl2SqlService;
+
+	private final SqlMemoryService sqlMemoryService;
+
+	private final SqlErrorAnalyzer sqlErrorAnalyzer;
 
 	@Override
 	public Map<String, Object> apply(OverAllState state) throws Exception {
@@ -91,7 +97,7 @@ public class SemanticConsistencyNode implements NodeAction {
 		Flux<GraphResponse<StreamingOutput>> generator = FluxUtil.createStreamingGeneratorWithMessages(this.getClass(),
 				state, "开始语义一致性校验", "语义一致性校验完成", validationResult -> {
 					boolean isPassed = parseValidationResult(validationResult);
-					Map<String, Object> result = buildValidationResult(isPassed, validationResult);
+					Map<String, Object> result = buildValidationResult(state, sql, userQuery, isPassed, validationResult);
 					log.info("[{}] Semantic consistency validation result: {}, passed: {}",
 							this.getClass().getSimpleName(), validationResult, isPassed);
 					return result;
@@ -135,11 +141,16 @@ public class SemanticConsistencyNode implements NodeAction {
 	/**
 	 * Build validation result
 	 */
-	private Map<String, Object> buildValidationResult(boolean passed, String validationResult) {
+	private Map<String, Object> buildValidationResult(OverAllState state, String sql, String userQuery, boolean passed,
+			String validationResult) {
 		if (passed) {
 			return Map.of(SEMANTIC_CONSISTENCY_NODE_OUTPUT, true);
 		}
 		else {
+			String agentId = StateUtil.getStringValue(state, AGENT_ID, "");
+			String sessionId = StateUtil.getStringValue(state, SESSION_ID, null);
+			sqlMemoryService.saveError(agentId, sessionId, userQuery, sql, validationResult,
+					sqlErrorAnalyzer.analyze(validationResult));
 			return Map.of(SEMANTIC_CONSISTENCY_NODE_OUTPUT, false, SQL_REGENERATE_REASON,
 					SqlRetryDto.semantic(validationResult));
 		}

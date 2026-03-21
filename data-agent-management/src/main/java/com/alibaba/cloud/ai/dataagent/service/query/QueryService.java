@@ -38,6 +38,7 @@ public interface QueryService {
 	 * @param agentId 代理ID
 	 * @param naturalQuery 自然语言查询
 	 */
-	void queryStream(Sinks.Many<ServerSentEvent<GraphNodeResponse>> sink, String agentId, String naturalQuery);
+	void queryStream(Sinks.Many<ServerSentEvent<GraphNodeResponse>> sink, String agentId, String sessionId,
+			String threadId, String naturalQuery);
 
 }

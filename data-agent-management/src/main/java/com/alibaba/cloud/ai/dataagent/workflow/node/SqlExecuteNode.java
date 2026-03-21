@@ -35,6 +35,8 @@ import com.alibaba.cloud.ai.dataagent.enums.TextType;
 import com.alibaba.cloud.ai.dataagent.prompt.PromptHelper;
 import com.alibaba.cloud.ai.dataagent.properties.DataAgentProperties;
 import com.alibaba.cloud.ai.dataagent.service.llm.LlmService;
+import com.alibaba.cloud.ai.dataagent.service.memory.SqlErrorAnalyzer;
+import com.alibaba.cloud.ai.dataagent.service.memory.SqlMemoryService;
 import com.alibaba.cloud.ai.dataagent.service.nl2sql.Nl2SqlService;
 import com.alibaba.cloud.ai.dataagent.util.ChatResponseUtil;
 import com.alibaba.cloud.ai.dataagent.util.DatabaseUtil;
@@ -49,8 +51,12 @@ import com.alibaba.cloud.ai.graph.OverAllState;
 import com.alibaba.cloud.ai.graph.action.NodeAction;
 import com.alibaba.cloud.ai.graph.streaming.StreamingOutput;
 import java.time.Duration;
+import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 import lombok.AllArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.commons.lang3.StringUtils;
@@ -82,6 +88,10 @@ public class SqlExecuteNode implements NodeAction {
 	private final DataAgentProperties properties;
 
 	private final JsonParseUtil jsonParseUtil;
+
+	private final SqlMemoryService sqlMemoryService;
+
+	private final SqlErrorAnalyzer sqlErrorAnalyzer;
 
 	private static final int SAMPLE_DATA_NUMBER = 20;
 
@@ -133,6 +143,9 @@ public class SqlExecuteNode implements NodeAction {
 
 		Accessor dbAccessor = databaseUtil.getAgentAccessor(agentId);
 		final Map<String, Object> result = new HashMap<>();
+		String agentIdValue = String.valueOf(agentId);
+		String sessionId = StateUtil.getStringValue(state, Constant.SESSION_ID, null);
+		String userQuery = StateUtil.getStringValue(state, Constant.INPUT_KEY, "");
 
 		// 先返回流式数据，在执行数据库查询
 		Flux<ChatResponse> displayFlux = Flux.create(emitter -> {
@@ -146,6 +159,7 @@ public class SqlExecuteNode implements NodeAction {
 			try {
 				// Execute SQL query and get results immediately
 				ResultSetBO resultSetBO = dbAccessor.executeSqlAndReturnObject(dbConfig, dbQueryParameter);
+				sqlMemoryService.saveSuccess(agentIdValue, sessionId, userQuery, sqlQuery, extractTables(sqlQuery));
 				// 调用大模型获取图表配置信息并填充到ResultSetBO中
 				DisplayStyleBO displayStyleBO = enrichResultSetWithChartConfig(state, resultSetBO);
 				resultBO.setResultSet(resultSetBO);
@@ -185,6 +199,8 @@ public class SqlExecuteNode implements NodeAction {
 			catch (Exception e) {
 				String errorMessage = e.getMessage();
 				log.error("SQL execution failed - SQL as follows: \n {} \n ", sqlQuery, e);
+				sqlMemoryService.saveError(agentIdValue, sessionId, userQuery, sqlQuery, errorMessage,
+						sqlErrorAnalyzer.analyze(errorMessage));
 				result.put(SQL_REGENERATE_REASON, SqlRetryDto.sqlExecute(errorMessage));
 				emitter.next(ChatResponseUtil.createResponse("SQL执行失败: " + errorMessage));
 			}
@@ -198,6 +214,23 @@ public class SqlExecuteNode implements NodeAction {
 		Flux<GraphResponse<StreamingOutput>> generator = FluxUtil.createStreamingGeneratorWithMessages(this.getClass(),
 				state, v -> result, displayFlux);
 		return Map.of(SQL_EXECUTE_NODE_OUTPUT, generator);
+	}
+
+	private List<String> extractTables(String sqlQuery) {
+		Pattern pattern = Pattern.compile("(?i)(?:from|join)\\s+([\\w.`\"\\[\\]]+)");
+		Matcher matcher = pattern.matcher(StringUtils.defaultString(sqlQuery));
+		List<String> tables = new ArrayList<>();
+		while (matcher.find()) {
+			String table = matcher.group(1);
+			if (table == null) {
+				continue;
+			}
+			String normalized = table.replace("`", "").replace("\"", "").replace("[", "").replace("]", "");
+			if (!tables.contains(normalized)) {
+				tables.add(normalized);
+			}
+		}
+		return tables;
 	}
 
 	/**

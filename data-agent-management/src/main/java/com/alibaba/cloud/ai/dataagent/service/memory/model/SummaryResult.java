@@ -13,24 +13,14 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package com.alibaba.cloud.ai.dataagent.service.chat;
-
-import com.alibaba.cloud.ai.dataagent.entity.ChatMessage;
+package com.alibaba.cloud.ai.dataagent.service.memory.model;
 
 import java.util.List;
 
-public interface ChatMessageService {
+public record SummaryResult(String summary, List<String> keyPoints, String userIntent, List<String> importantContext) {
 
-	/**
-	 * Get message list by session ID
-	 */
-	List<ChatMessage> findBySessionId(String sessionId);
-
-	List<ChatMessage> findRecentBySessionId(String sessionId, int limit);
-
-	/**
-	 * Save message
-	 */
-	ChatMessage saveMessage(ChatMessage message);
+	public static SummaryResult empty() {
+		return new SummaryResult("", List.of(), "", List.of());
+	}
 
 }

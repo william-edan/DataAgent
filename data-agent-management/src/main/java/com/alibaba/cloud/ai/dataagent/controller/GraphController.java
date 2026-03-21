@@ -53,6 +53,7 @@ public class GraphController {
 
 	@GetMapping(value = "/stream/search", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
 	public Flux<ServerSentEvent<GraphNodeResponse>> streamSearch(@RequestParam("agentId") String agentId,
+			@RequestParam(value = "sessionId", required = false) String sessionId,
 			@RequestParam(value = "threadId", required = false) String threadId, @RequestParam("query") String query,
 			@RequestParam(value = "humanFeedback", required = false) boolean humanFeedback,
 			@RequestParam(value = "humanFeedbackContent", required = false) String humanFeedbackContent,
@@ -71,6 +72,7 @@ public class GraphController {
 		// 构建 GraphRequest（可能用于 COMPLEX 路径）
 		GraphRequest request = GraphRequest.builder()
 			.agentId(agentId)
+			.sessionId(sessionId)
 			.threadId(threadId)
 			.query(query)
 			.humanFeedback(humanFeedback)
@@ -111,7 +113,7 @@ public class GraphController {
 			if (queryType == QueryType.SIMPLE) {
 				log.info("Routing to SIMPLE query path for query: '{}'", query);
 				useSimplePath = true;
-				queryService.queryStream(sink, agentId, query);
+				queryService.queryStream(sink, agentId, sessionId, threadId, query);
 			}
 			else {
 				log.info("Routing to COMPLEX analysis path for query: '{}'", query);

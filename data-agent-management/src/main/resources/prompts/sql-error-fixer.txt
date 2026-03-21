@@ -30,6 +30,9 @@
 {question}
 {evidence}
 
+## 5.5 SQL 记忆参考
+{sql_memory_advice}
+
 # 修复策略
 ## 方言纠正：严格检查是否使用了不符合 {dialect} 的函数或语法（例如引号用法、日期处理、分页）。
 ## Schema 对齐：如果报错提示“Column not found”，请在 Schema 中寻找最接近的正确列名。

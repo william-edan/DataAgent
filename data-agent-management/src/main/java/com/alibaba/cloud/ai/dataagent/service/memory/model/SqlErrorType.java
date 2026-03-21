@@ -13,24 +13,16 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package com.alibaba.cloud.ai.dataagent.service.chat;
+package com.alibaba.cloud.ai.dataagent.service.memory.model;
 
-import com.alibaba.cloud.ai.dataagent.entity.ChatMessage;
+public enum SqlErrorType {
 
-import java.util.List;
+	TABLE_NOT_EXIST,
 
-public interface ChatMessageService {
+	COLUMN_NOT_EXIST,
 
-	/**
-	 * Get message list by session ID
-	 */
-	List<ChatMessage> findBySessionId(String sessionId);
+	SYNTAX_ERROR,
 
-	List<ChatMessage> findRecentBySessionId(String sessionId, int limit);
-
-	/**
-	 * Save message
-	 */
-	ChatMessage saveMessage(ChatMessage message);
+	UNKNOWN
 
 }
