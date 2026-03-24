@@ -267,6 +267,9 @@ public class DataAgentConfiguration implements DisposableBean {
 			keyStrategyHashMap.put(SQL_GENERATE_OUTPUT, KeyStrategy.REPLACE);
 			keyStrategyHashMap.put(SQL_GENERATE_COUNT, KeyStrategy.REPLACE);
 			keyStrategyHashMap.put(SQL_REGENERATE_REASON, KeyStrategy.REPLACE);
+			keyStrategyHashMap.put(SQL_RETRY_HISTORY, KeyStrategy.REPLACE);
+			keyStrategyHashMap.put(SQL_SEMANTIC_LEARNING_CONTENT, KeyStrategy.REPLACE);
+			keyStrategyHashMap.put(SQL_SEMANTIC_LEARNING_FINGERPRINTS, KeyStrategy.REPLACE);
 			// Semantic consistence节点输出
 			keyStrategyHashMap.put(SEMANTIC_CONSISTENCY_NODE_OUTPUT, KeyStrategy.REPLACE);
 			// Planner 节点输出

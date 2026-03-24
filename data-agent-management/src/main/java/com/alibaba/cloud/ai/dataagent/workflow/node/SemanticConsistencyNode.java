@@ -15,12 +15,13 @@
  */
 package com.alibaba.cloud.ai.dataagent.workflow.node;
 
-import com.alibaba.cloud.ai.dataagent.util.FluxUtil;
-import com.alibaba.cloud.ai.dataagent.util.StateUtil;
 import com.alibaba.cloud.ai.dataagent.dto.datasource.SqlRetryDto;
 import com.alibaba.cloud.ai.dataagent.dto.prompt.SemanticConsistencyDTO;
 import com.alibaba.cloud.ai.dataagent.dto.schema.SchemaDTO;
 import com.alibaba.cloud.ai.dataagent.service.nl2sql.Nl2SqlService;
+import com.alibaba.cloud.ai.dataagent.util.ChatResponseUtil;
+import com.alibaba.cloud.ai.dataagent.util.FluxUtil;
+import com.alibaba.cloud.ai.dataagent.util.StateUtil;
 import com.alibaba.cloud.ai.graph.GraphResponse;
 import com.alibaba.cloud.ai.graph.OverAllState;
 import com.alibaba.cloud.ai.graph.action.NodeAction;
@@ -31,50 +32,59 @@ import org.springframework.ai.chat.model.ChatResponse;
 import org.springframework.stereotype.Component;
 import reactor.core.publisher.Flux;
 
+import java.util.LinkedHashMap;
 import java.util.Map;
 
-import static com.alibaba.cloud.ai.dataagent.constant.Constant.*;
-import static com.alibaba.cloud.ai.dataagent.util.PlanProcessUtil.getCurrentExecutionStepInstruction;
+import static com.alibaba.cloud.ai.dataagent.constant.Constant.DB_DIALECT_TYPE;
+import static com.alibaba.cloud.ai.dataagent.constant.Constant.EVIDENCE;
+import static com.alibaba.cloud.ai.dataagent.constant.Constant.INPUT_KEY;
+import static com.alibaba.cloud.ai.dataagent.constant.Constant.PLANNER_NODE_OUTPUT;
+import static com.alibaba.cloud.ai.dataagent.constant.Constant.SQL_GENERATE_OUTPUT;
+import static com.alibaba.cloud.ai.dataagent.constant.Constant.SQL_REGENERATE_REASON;
+import static com.alibaba.cloud.ai.dataagent.constant.Constant.SEMANTIC_CONSISTENCY_NODE_OUTPUT;
+import static com.alibaba.cloud.ai.dataagent.constant.Constant.TABLE_RELATION_OUTPUT;
 import static com.alibaba.cloud.ai.dataagent.prompt.PromptHelper.buildMixMacSqlDbPrompt;
+import static com.alibaba.cloud.ai.dataagent.util.PlanProcessUtil.getCurrentExecutionStepInstruction;
 
 /**
- * Semantic consistency validation node that checks SQL query semantic consistency.
- *
- * This node is responsible for: - Validating SQL query semantic consistency against
- * schema and evidence - Providing validation results for query refinement - Handling
- * validation failures with recommendations - Managing step progression in execution plan
- *
- * @author zhangshenghang
+ * Semantic consistency validation node.
  */
 @Slf4j
 @Component
 @AllArgsConstructor
 public class SemanticConsistencyNode implements NodeAction {
 
+	private static final String PASS_CONCLUSION = "通过";
+
+	private static final String FAIL_CONCLUSION = "不通过";
+
+	private static final String ERROR_TYPE_KEY = "错误类型=";
+
+	private static final String PROBLEM_DESCRIPTION_KEY = "问题描述=";
+
+	private static final String TYPICAL_ERROR_KEY = "典型错误=";
+
+	private static final String SOLUTION_KEY = "解决方案=";
+
 	private final Nl2SqlService nl2SqlService;
 
 	@Override
 	public Map<String, Object> apply(OverAllState state) throws Exception {
-
-		// Get necessary input parameters
 		String evidence = StateUtil.getStringValue(state, EVIDENCE);
 		SchemaDTO schemaDTO = StateUtil.getObjectValue(state, TABLE_RELATION_OUTPUT, SchemaDTO.class);
 		String dialect = StateUtil.getStringValue(state, DB_DIALECT_TYPE);
-		// Get current execution step and SQL query
 		String sql = StateUtil.getStringValue(state, SQL_GENERATE_OUTPUT);
 		String userQuery = StateUtil.getCanonicalQuery(state);
 
-		// 获取执行描述：如果有计划使用计划指令，否则使用用户原始查询
 		String executionDescription;
 		boolean hasPlan = state.value(PLANNER_NODE_OUTPUT).isPresent();
 		if (hasPlan) {
 			executionDescription = getCurrentExecutionStepInstruction(state);
-			log.debug("Using plan-based execution description for semantic consistency check");
+			log.debug("使用计划步骤说明进行语义一致性校验");
 		}
 		else {
-			// 简单查询路径：直接使用用户查询
 			executionDescription = StateUtil.getStringValue(state, INPUT_KEY, "");
-			log.debug("Using direct user query as execution description for semantic consistency check");
+			log.debug("使用用户原始问题进行语义一致性校验");
 		}
 
 		SemanticConsistencyDTO semanticConsistencyDTO = SemanticConsistencyDTO.builder()
@@ -85,64 +95,254 @@ public class SemanticConsistencyNode implements NodeAction {
 			.userQuery(userQuery)
 			.evidence(evidence)
 			.build();
-		log.info("Starting semantic consistency validation - SQL: {}", sql);
+		log.info("开始语义一致性校验，SQL：{}", sql);
 		Flux<ChatResponse> validationResultFlux = nl2SqlService.performSemanticConsistency(semanticConsistencyDTO);
+		StringBuilder validationCollector = new StringBuilder();
+		Flux<ChatResponse> displayFlux = validationResultFlux
+			.doOnNext(chatResponse -> validationCollector.append(ChatResponseUtil.getText(chatResponse)))
+			.thenMany(Flux.defer(() -> Flux
+				.just(ChatResponseUtil.createResponse(buildValidationDisplayMessage(validationCollector.toString())))));
 
 		Flux<GraphResponse<StreamingOutput>> generator = FluxUtil.createStreamingGeneratorWithMessages(this.getClass(),
-				state, "开始语义一致性校验", "语义一致性校验完成", validationResult -> {
+				state, "开始语义一致性校验", "语义一致性校验完成", ignored -> {
+					String validationResult = validationCollector.toString();
 					boolean isPassed = parseValidationResult(validationResult);
+					if (isPassed) {
+						log.info("语义一致性校验通过");
+					}
+					else {
+						log.info("语义一致性校验未通过，摘要：{}", extractFailureBriefSummary(validationResult));
+					}
 					Map<String, Object> result = buildValidationResult(isPassed, validationResult);
-					log.info("[{}] Semantic consistency validation result: {}, passed: {}",
-							this.getClass().getSimpleName(), validationResult, isPassed);
+					log.info("[{}] 语义一致性校验完成，是否通过：{}，摘要：{}", this.getClass().getSimpleName(), isPassed,
+							isPassed ? "通过" : extractFailureBriefSummary(validationResult));
 					return result;
-				}, validationResultFlux);
+				}, displayFlux);
 
 		return Map.of(SEMANTIC_CONSISTENCY_NODE_OUTPUT, generator);
 	}
 
-	/**
-	 * Parse validation result to determine if validation passed. Handles cases where LLM
-	 * may output analysis before final conclusion.
-	 * @param validationResult The validation result string from LLM
-	 * @return true if validation passed, false otherwise
-	 */
 	private boolean parseValidationResult(String validationResult) {
+		if (validationResult == null) {
+			return true;
+		}
 		String trimmed = validationResult.trim();
-		// Directly starts with "通过"
-		if (trimmed.startsWith("通过")) {
+		if (trimmed.isEmpty()) {
 			return true;
 		}
-		// Check if ends with "通过" (LLM may have analysis before final conclusion)
-		if (trimmed.endsWith("通过")) {
+		if (isExplicitPass(trimmed)) {
 			return true;
 		}
-		// Check last line for final conclusion
-		String[] lines = trimmed.split("\n");
+		if (isExplicitFailure(trimmed)) {
+			return false;
+		}
+		String[] lines = trimmed.split("\\R");
 		String lastLine = lines[lines.length - 1].trim();
-		if (lastLine.equals("通过") || lastLine.startsWith("通过")) {
+		if (isExplicitFailure(lastLine)) {
+			return false;
+		}
+		if (isExplicitPass(lastLine)) {
 			return true;
 		}
-		// Check for self-correction patterns
-		if (trimmed.contains("最终判定为通过") || trimmed.contains("判定为通过")
-				|| trimmed.contains("更正：通过") || trimmed.contains("更正:通过")
-				|| trimmed.contains("修正：通过") || trimmed.contains("修正:通过")) {
+		if (containsNegativeConclusion(trimmed)) {
+			return false;
+		}
+		if (containsPositiveConclusion(trimmed)) {
 			return true;
 		}
-		// Default: not passed if contains "不通过" without correction
-		return !trimmed.contains("不通过");
+		return true;
 	}
 
-	/**
-	 * Build validation result
-	 */
+	private boolean isExplicitPass(String text) {
+		return PASS_CONCLUSION.equals(text) || text.startsWith(PASS_CONCLUSION + "|") || text.startsWith(PASS_CONCLUSION + "\n");
+	}
+
+	private boolean isExplicitFailure(String text) {
+		return FAIL_CONCLUSION.equals(text) || text.startsWith(FAIL_CONCLUSION + "|") || text.startsWith(FAIL_CONCLUSION + "\n");
+	}
+
+	private boolean containsNegativeConclusion(String text) {
+		return text.contains("未通过") || text.contains("不通过") || text.contains("校验失败") || text.contains("判定为不通过")
+				|| text.contains("最终判定为不通过") || text.contains("修正:不通过") || text.contains("修正：不通过")
+				|| text.contains("更正:不通过") || text.contains("更正：不通过");
+	}
+
+	private boolean containsPositiveConclusion(String text) {
+		return text.contains("最终判定为通过") || text.contains("判定为通过") || text.contains("修正:通过")
+				|| text.contains("修正：通过") || text.contains("更正:通过") || text.contains("更正：通过")
+				|| text.contains(PASS_CONCLUSION);
+	}
+
+	private String extractStructuredFailureSummary(String validationResult) {
+		if (validationResult == null) {
+			return "";
+		}
+		String trimmed = validationResult.trim();
+		if (!trimmed.startsWith(FAIL_CONCLUSION)) {
+			return trimmed;
+		}
+		Map<String, String> fields = parseStructuredFailureFields(trimmed);
+		if (fields.isEmpty()) {
+			return trimmed;
+		}
+		StringBuilder summary = new StringBuilder();
+		appendSummaryField(summary, "错误类型", fields.get("错误类型"));
+		appendSummaryField(summary, "问题描述", fields.get("问题描述"));
+		appendSummaryField(summary, "典型错误", fields.get("典型错误"));
+		appendSummaryField(summary, "解决方案", fields.get("解决方案"));
+		return summary.length() == 0 ? trimmed : summary.toString();
+	}
+
+	private String extractFailureBriefSummary(String validationResult) {
+		if (validationResult == null) {
+			return "";
+		}
+		String trimmed = validationResult.trim();
+		if (!trimmed.startsWith(FAIL_CONCLUSION)) {
+			return trimmed;
+		}
+		Map<String, String> fields = parseStructuredFailureFields(trimmed);
+		if (fields.isEmpty()) {
+			return trimmed;
+		}
+		StringBuilder summary = new StringBuilder();
+		appendSummaryField(summary, "错误类型", fields.get("错误类型"));
+		appendSummaryField(summary, "问题描述", fields.get("问题描述"));
+		return summary.length() == 0 ? trimmed : summary.toString();
+	}
+
+	private String buildValidationDisplayMessage(String validationResult) {
+		if (parseValidationResult(validationResult)) {
+			return "语义一致性校验通过";
+		}
+		String summary = extractFailureBriefSummary(validationResult);
+		if (summary.isBlank()) {
+			return "语义一致性校验未通过";
+		}
+		// 前端提示只保留简短失败原因，避免把完整结构化内容直接展示出来。
+		return "语义一致性校验未通过：" + abbreviate(summary, 80);
+	}
+
+	private String abbreviate(String text, int maxLength) {
+		if (text == null || text.length() <= maxLength) {
+			return text == null ? "" : text;
+		}
+		return text.substring(0, maxLength) + "...";
+	}
+
+	private Map<String, String> parseStructuredFailureFields(String validationResult) {
+		String payload = validationResult.substring(FAIL_CONCLUSION.length()).stripLeading();
+		if (payload.startsWith("|")) {
+			payload = payload.substring(1).stripLeading();
+		}
+		if (payload.contains("\n")) {
+			return parseLineBasedStructuredFields(payload);
+		}
+		if (payload.contains(ERROR_TYPE_KEY) || payload.contains(PROBLEM_DESCRIPTION_KEY) || payload.contains(TYPICAL_ERROR_KEY)
+				|| payload.contains(SOLUTION_KEY)) {
+			return parseLegacyDelimitedStructuredFields(payload);
+		}
+		return Map.of();
+	}
+
+	private Map<String, String> parseLineBasedStructuredFields(String payload) {
+		Map<String, String> fields = new LinkedHashMap<>();
+		String currentKey = null;
+		StringBuilder currentValue = new StringBuilder();
+		for (String line : payload.split("\\R", -1)) {
+			String trimmedLine = line.stripTrailing();
+			String key = extractLineKey(trimmedLine);
+			if (key != null) {
+				putStructuredField(fields, currentKey, currentValue);
+				currentKey = key;
+				currentValue = new StringBuilder(trimmedLine.substring(key.length() + 1).stripLeading());
+				continue;
+			}
+			if (currentKey != null) {
+				if (currentValue.length() > 0) {
+					currentValue.append('\n');
+				}
+				currentValue.append(line);
+			}
+		}
+		putStructuredField(fields, currentKey, currentValue);
+		return fields;
+	}
+
+	private String extractLineKey(String line) {
+		if (line.startsWith(ERROR_TYPE_KEY)) {
+			return "错误类型";
+		}
+		if (line.startsWith(PROBLEM_DESCRIPTION_KEY)) {
+			return "问题描述";
+		}
+		if (line.startsWith(TYPICAL_ERROR_KEY)) {
+			return "典型错误";
+		}
+		if (line.startsWith(SOLUTION_KEY)) {
+			return "解决方案";
+		}
+		return null;
+	}
+
+	private Map<String, String> parseLegacyDelimitedStructuredFields(String payload) {
+		Map<String, String> fields = new LinkedHashMap<>();
+		putStructuredField(fields, "错误类型", extractBetween(payload, ERROR_TYPE_KEY, PROBLEM_DESCRIPTION_KEY));
+		putStructuredField(fields, "问题描述", extractBetween(payload, PROBLEM_DESCRIPTION_KEY, TYPICAL_ERROR_KEY));
+		putStructuredField(fields, "典型错误", extractBetween(payload, TYPICAL_ERROR_KEY, SOLUTION_KEY));
+		putStructuredField(fields, "解决方案", extractBetween(payload, SOLUTION_KEY, null));
+		return fields;
+	}
+
+	private String extractBetween(String text, String startToken, String endToken) {
+		int start = text.indexOf(startToken);
+		if (start < 0) {
+			return null;
+		}
+		int valueStart = start + startToken.length();
+		int end = endToken == null ? text.length() : text.indexOf(endToken, valueStart);
+		if (end < 0) {
+			end = text.length();
+		}
+		return trimLegacyFieldDelimiter(text.substring(valueStart, end));
+	}
+
+	private String trimLegacyFieldDelimiter(String value) {
+		String trimmed = value.trim();
+		while (trimmed.startsWith("|")) {
+			trimmed = trimmed.substring(1).trim();
+		}
+		while (trimmed.endsWith("|")) {
+			trimmed = trimmed.substring(0, trimmed.length() - 1).trim();
+		}
+		return trimmed;
+	}
+
+	private void putStructuredField(Map<String, String> fields, String currentKey, Object currentValue) {
+		if (currentKey == null) {
+			return;
+		}
+		String value = currentValue.toString().trim();
+		if (!value.isEmpty()) {
+			fields.put(currentKey, value);
+		}
+	}
+
+	private void appendSummaryField(StringBuilder summary, String label, String value) {
+		if (value == null || value.isBlank()) {
+			return;
+		}
+		if (summary.length() > 0) {
+			summary.append('；');
+		}
+		summary.append(label).append('：').append(value);
+	}
+
 	private Map<String, Object> buildValidationResult(boolean passed, String validationResult) {
 		if (passed) {
 			return Map.of(SEMANTIC_CONSISTENCY_NODE_OUTPUT, true);
 		}
-		else {
-			return Map.of(SEMANTIC_CONSISTENCY_NODE_OUTPUT, false, SQL_REGENERATE_REASON,
-					SqlRetryDto.semantic(validationResult));
-		}
+		return Map.of(SEMANTIC_CONSISTENCY_NODE_OUTPUT, false, SQL_REGENERATE_REASON, SqlRetryDto.semantic(validationResult));
 	}
 
 }

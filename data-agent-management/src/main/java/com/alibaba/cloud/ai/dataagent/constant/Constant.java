@@ -72,6 +72,12 @@ public final class Constant {
 	// SQL重试历史记录（用于避免LLM重复相同的错误）
 	public static final String SQL_RETRY_HISTORY = "SQL_RETRY_HISTORY";
 
+	// SQL语义学习内容，供同轮重试直接注入 prompt
+	public static final String SQL_SEMANTIC_LEARNING_CONTENT = "SQL_SEMANTIC_LEARNING_CONTENT";
+
+	// SQL语义学习指纹列表，用于去重
+	public static final String SQL_SEMANTIC_LEARNING_FINGERPRINTS = "SQL_SEMANTIC_LEARNING_FINGERPRINTS";
+
 	public static final String SEMANTIC_CONSISTENCY_NODE_OUTPUT = "SEMANTIC_CONSISTENCY_NODE_OUTPUT";
 
 	public static final String PLANNER_NODE_OUTPUT = "PLANNER_NODE_OUTPUT";

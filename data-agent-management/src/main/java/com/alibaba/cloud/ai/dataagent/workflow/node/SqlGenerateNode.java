@@ -15,6 +15,7 @@
  */
 package com.alibaba.cloud.ai.dataagent.workflow.node;
 
+import com.alibaba.cloud.ai.dataagent.dto.datasource.SqlSemanticLearningCard;
 import com.alibaba.cloud.ai.dataagent.dto.datasource.SqlRetryHistoryItem;
 import com.alibaba.cloud.ai.dataagent.dto.planner.ExecutionStep;
 import com.alibaba.cloud.ai.dataagent.enums.TextType;
@@ -27,6 +28,8 @@ import com.alibaba.cloud.ai.dataagent.dto.datasource.SqlRetryDto;
 import com.alibaba.cloud.ai.dataagent.dto.prompt.SqlGenerationDTO;
 import com.alibaba.cloud.ai.dataagent.dto.schema.SchemaDTO;
 import com.alibaba.cloud.ai.dataagent.service.nl2sql.Nl2SqlService;
+import com.alibaba.cloud.ai.dataagent.service.nl2sql.SqlSemanticLearningPersistenceService;
+import com.alibaba.cloud.ai.dataagent.service.nl2sql.SqlSemanticLearningService;
 import com.alibaba.cloud.ai.graph.GraphResponse;
 import com.alibaba.cloud.ai.graph.OverAllState;
 import com.alibaba.cloud.ai.graph.StateGraph;
@@ -34,6 +37,7 @@ import com.alibaba.cloud.ai.graph.action.NodeAction;
 import com.alibaba.cloud.ai.graph.streaming.StreamingOutput;
 import lombok.AllArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.apache.commons.lang3.StringUtils;
 import org.springframework.ai.chat.model.ChatResponse;
 import org.springframework.stereotype.Component;
 import reactor.core.publisher.Flux;
@@ -64,6 +68,10 @@ public class SqlGenerateNode implements NodeAction {
 	private final Nl2SqlService nl2SqlService;
 
 	private final DataAgentProperties properties;
+
+	private final SqlSemanticLearningService sqlSemanticLearningService;
+
+	private final SqlSemanticLearningPersistenceService sqlSemanticLearningPersistenceService;
 
 	@Override
 	public Map<String, Object> apply(OverAllState state) throws Exception {
@@ -116,30 +124,59 @@ public class SqlGenerateNode implements NodeAction {
 		// 获取历史重试记录
 		List<SqlRetryHistoryItem> retryHistory = getRetryHistory(state);
 		String originalSql = StateUtil.getStringValue(state, SQL_GENERATE_OUTPUT, "");
+		String semanticLearningContent = getSemanticLearningContent(state);
+		List<String> semanticLearningFingerprints = getSemanticLearningFingerprints(state);
 
 		if (retryDto.sqlExecuteFail()) {
 			displayMessage = "检测到SQL执行异常，开始重新生成SQL...";
 			// 添加到历史记录
 			retryHistory = addToHistory(retryHistory, count, originalSql, retryDto.reason(), "execution");
-			sqlFlux = handleRetryGenerateSqlForExecutionError(state, originalSql, retryDto.reason(), promptForSql);
+			SqlSemanticLearningCard learningCard = buildExecutionLearningCard(retryDto.reason(), originalSql);
+			if (learningCard != null) {
+				LearningApplyResult learningApplyResult = applyLearningCard(state, learningCard, semanticLearningContent,
+						semanticLearningFingerprints, "SQL 执行失败经验");
+				semanticLearningContent = learningApplyResult.learningContent();
+				semanticLearningFingerprints = learningApplyResult.learningFingerprints();
+			}
+			sqlFlux = handleRetryGenerateSqlForExecutionError(state, originalSql, retryDto.reason(), promptForSql,
+					semanticLearningContent);
 		}
 		else if (retryDto.semanticFail()) {
 			displayMessage = "语义一致性校验未通过，开始重新生成SQL...";
 			// 添加到历史记录
 			retryHistory = addToHistory(retryHistory, count, originalSql, retryDto.reason(), "semantic");
-			sqlFlux = handleRetryGenerateSqlForSemanticFail(state, originalSql, retryDto.reason(), promptForSql, retryHistory);
+			SqlSemanticLearningCard learningCard = buildSemanticLearningCard(retryDto.reason());
+			if (learningCard != null) {
+				if (sqlSemanticLearningService.isDuplicate(learningCard.getFingerprint(), semanticLearningFingerprints)) {
+					log.info("检测到重复的 SQL 语义失败经验，复用已有经验卡，指纹：{}", learningCard.getFingerprint());
+				}
+				else {
+					semanticLearningContent = sqlSemanticLearningService.mergeLearningContent(semanticLearningContent,
+							learningCard);
+					semanticLearningFingerprints = addSemanticLearningFingerprint(semanticLearningFingerprints,
+							learningCard.getFingerprint());
+					log.info("SQL 语义失败经验已注入本轮重试，指纹：{}", learningCard.getFingerprint());
+					persistLearningCard(state, learningCard);
+				}
+			}
+			sqlFlux = handleRetryGenerateSqlForSemanticFail(state, originalSql, retryDto.reason(), promptForSql, retryHistory,
+					semanticLearningContent);
 		}
 		else {
 			displayMessage = "开始生成SQL...";
 			// 首次生成，清空历史记录
 			retryHistory = new ArrayList<>();
-			sqlFlux = handleGenerateSql(state, promptForSql);
+			semanticLearningContent = "";
+			semanticLearningFingerprints = new ArrayList<>();
+			sqlFlux = handleGenerateSql(state, promptForSql, semanticLearningContent);
 		}
 
 		// 准备返回结果，同时需要清除一些状态数据，保留历史记录
 		List<SqlRetryHistoryItem> finalRetryHistory = retryHistory;
 		Map<String, Object> result = new HashMap<>(Map.of(SQL_GENERATE_OUTPUT, StateGraph.END, SQL_GENERATE_COUNT,
-				count + 1, SQL_REGENERATE_REASON, SqlRetryDto.empty(), SQL_RETRY_HISTORY, finalRetryHistory));
+				count + 1, SQL_REGENERATE_REASON, SqlRetryDto.empty(), SQL_RETRY_HISTORY, finalRetryHistory,
+				SQL_SEMANTIC_LEARNING_CONTENT, semanticLearningContent, SQL_SEMANTIC_LEARNING_FINGERPRINTS,
+				semanticLearningFingerprints));
 
 		// Create display flux for user experience only
 		StringBuilder sqlCollector = new StringBuilder();
@@ -165,8 +202,9 @@ public class SqlGenerateNode implements NodeAction {
 	 * missing columns, etc.)
 	 */
 	private Flux<String> handleRetryGenerateSqlForExecutionError(OverAllState state, String originalSql, String errorMsg,
-			String executionDescription) {
-		SqlGenerationDTO sqlGenerationDTO = buildSqlGenerationDTO(state, originalSql, errorMsg, executionDescription, null);
+			String executionDescription, String semanticLearningContent) {
+		SqlGenerationDTO sqlGenerationDTO = buildSqlGenerationDTO(state, originalSql, errorMsg, executionDescription, null,
+				semanticLearningContent);
 		return nl2SqlService.generateSql(sqlGenerationDTO);
 	}
 
@@ -175,19 +213,23 @@ public class SqlGenerateNode implements NodeAction {
 	 * by LLM validation)
 	 */
 	private Flux<String> handleRetryGenerateSqlForSemanticFail(OverAllState state, String originalSql,
-			String semanticFeedback, String executionDescription, List<SqlRetryHistoryItem> retryHistory) {
-		SqlGenerationDTO sqlGenerationDTO = buildSqlGenerationDTO(state, originalSql, semanticFeedback, executionDescription, retryHistory);
+			String semanticFeedback, String executionDescription, List<SqlRetryHistoryItem> retryHistory,
+			String semanticLearningContent) {
+		SqlGenerationDTO sqlGenerationDTO = buildSqlGenerationDTO(state, originalSql, semanticFeedback, executionDescription,
+				retryHistory, semanticLearningContent);
 		return nl2SqlService.regenerateSqlForSemanticFail(sqlGenerationDTO);
 	}
 
-	private Flux<String> handleGenerateSql(OverAllState state, String executionDescription) {
-		SqlGenerationDTO sqlGenerationDTO = buildSqlGenerationDTO(state, null, null, executionDescription, null);
+	private Flux<String> handleGenerateSql(OverAllState state, String executionDescription, String semanticLearningContent) {
+		SqlGenerationDTO sqlGenerationDTO = buildSqlGenerationDTO(state, null, null, executionDescription, null,
+				semanticLearningContent);
 		return nl2SqlService.generateSql(sqlGenerationDTO);
 	}
 
 	private SqlGenerationDTO buildSqlGenerationDTO(OverAllState state, String originalSql, String errorMsg,
-			String executionDescription, List<SqlRetryHistoryItem> retryHistory) {
-		String evidence = StateUtil.getStringValue(state, EVIDENCE);
+			String executionDescription, List<SqlRetryHistoryItem> retryHistory, String semanticLearningContent) {
+		String evidence = sqlSemanticLearningService.buildPromptEvidence(StateUtil.getStringValue(state, EVIDENCE),
+				semanticLearningContent);
 		SchemaDTO schemaDTO = StateUtil.getObjectValue(state, TABLE_RELATION_OUTPUT, SchemaDTO.class);
 		String userQuery = StateUtil.getCanonicalQuery(state);
 		String dialect = StateUtil.getStringValue(state, DB_DIALECT_TYPE);
@@ -225,6 +267,72 @@ public class SqlGenerateNode implements NodeAction {
 		newHistory.add(item);
 		log.debug("Added retry history item #{}: type={}, sql={}", attemptNumber, type, sql);
 		return newHistory;
+	}
+
+	private SqlSemanticLearningCard buildSemanticLearningCard(String validationResult) {
+		return sqlSemanticLearningService.buildLearningCard(validationResult).map(card -> {
+			log.info("检测到 SQL 语义校验失败，已整理学习经验，指纹：{}", card.getFingerprint());
+			return card;
+		}).orElseGet(() -> {
+			log.warn("SQL 语义失败经验解析失败，本次继续使用原始失败原因重试");
+			return null;
+		});
+	}
+
+	private SqlSemanticLearningCard buildExecutionLearningCard(String errorMessage, String originalSql) {
+		return sqlSemanticLearningService.buildExecutionLearningCard(errorMessage, originalSql).map(card -> {
+			log.info("检测到 SQL 执行失败，已整理学习经验，指纹：{}", card.getFingerprint());
+			return card;
+		}).orElseGet(() -> {
+			log.warn("SQL 执行失败经验解析失败，本次继续使用原始数据库报错重试");
+			return null;
+		});
+	}
+
+	@SuppressWarnings("unchecked")
+	private List<String> getSemanticLearningFingerprints(OverAllState state) {
+		return new ArrayList<>(state.value(SQL_SEMANTIC_LEARNING_FINGERPRINTS, List.class)
+			.map(list -> (List<String>) list)
+			.orElse(List.of()));
+	}
+
+	private String getSemanticLearningContent(OverAllState state) {
+		return StateUtil.getStringValue(state, SQL_SEMANTIC_LEARNING_CONTENT, "");
+	}
+
+	private List<String> addSemanticLearningFingerprint(List<String> fingerprints, String fingerprint) {
+		List<String> updatedFingerprints = new ArrayList<>(fingerprints);
+		if (StringUtils.isNotBlank(fingerprint)) {
+			updatedFingerprints.add(fingerprint);
+		}
+		return updatedFingerprints;
+	}
+
+	private void persistLearningCard(OverAllState state, SqlSemanticLearningCard learningCard) {
+		String agentId = StateUtil.getStringValue(state, AGENT_ID, "");
+		if (StringUtils.isBlank(agentId)) {
+			log.warn("当前状态缺少 agentId，跳过 SQL 语义失败经验持久化");
+			return;
+		}
+		sqlSemanticLearningPersistenceService.persistLearningCard(agentId, learningCard);
+	}
+
+	private LearningApplyResult applyLearningCard(OverAllState state, SqlSemanticLearningCard learningCard,
+			String learningContent, List<String> learningFingerprints, String learningLogPrefix) {
+		if (sqlSemanticLearningService.isDuplicate(learningCard.getFingerprint(), learningFingerprints)) {
+			log.info("检测到重复的{}，复用已有经验卡，指纹：{}", learningLogPrefix, learningCard.getFingerprint());
+			return new LearningApplyResult(learningContent, learningFingerprints);
+		}
+
+		String updatedLearningContent = sqlSemanticLearningService.mergeLearningContent(learningContent, learningCard);
+		List<String> updatedLearningFingerprints = addSemanticLearningFingerprint(learningFingerprints,
+				learningCard.getFingerprint());
+		log.info("{}已注入本轮重试，指纹：{}", learningLogPrefix, learningCard.getFingerprint());
+		persistLearningCard(state, learningCard);
+		return new LearningApplyResult(updatedLearningContent, updatedLearningFingerprints);
+	}
+
+	private record LearningApplyResult(String learningContent, List<String> learningFingerprints) {
 	}
 
 }
