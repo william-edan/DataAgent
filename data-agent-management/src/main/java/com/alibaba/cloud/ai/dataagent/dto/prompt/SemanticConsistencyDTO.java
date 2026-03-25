@@ -36,4 +36,9 @@ public class SemanticConsistencyDTO {
 
 	private String evidence;
 
+	/**
+	 * 查询契约。用于让语义校验与 SQL 生成共用同一套硬约束。
+	 */
+	private String queryContract;
+
 }

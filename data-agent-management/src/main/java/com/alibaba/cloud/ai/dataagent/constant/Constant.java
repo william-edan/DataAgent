@@ -78,6 +78,12 @@ public final class Constant {
 	// SQL语义学习指纹列表，用于去重
 	public static final String SQL_SEMANTIC_LEARNING_FINGERPRINTS = "SQL_SEMANTIC_LEARNING_FINGERPRINTS";
 
+	// 当前问题内累计触发的时间语义失败次数，用于决定是否开启时间校验熔断
+	public static final String TIME_SEMANTIC_FAIL_COUNT = "TIME_SEMANTIC_FAIL_COUNT";
+
+	// 当前问题是否已经开启时间语义校验熔断
+	public static final String TIME_SEMANTIC_BYPASS = "TIME_SEMANTIC_BYPASS";
+
 	public static final String SEMANTIC_CONSISTENCY_NODE_OUTPUT = "SEMANTIC_CONSISTENCY_NODE_OUTPUT";
 
 	public static final String PLANNER_NODE_OUTPUT = "PLANNER_NODE_OUTPUT";

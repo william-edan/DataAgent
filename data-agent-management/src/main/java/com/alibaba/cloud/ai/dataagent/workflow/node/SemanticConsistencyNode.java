@@ -19,6 +19,7 @@ import com.alibaba.cloud.ai.dataagent.dto.datasource.SqlRetryDto;
 import com.alibaba.cloud.ai.dataagent.dto.prompt.SemanticConsistencyDTO;
 import com.alibaba.cloud.ai.dataagent.dto.schema.SchemaDTO;
 import com.alibaba.cloud.ai.dataagent.service.nl2sql.Nl2SqlService;
+import com.alibaba.cloud.ai.dataagent.service.nl2sql.QueryContractService;
 import com.alibaba.cloud.ai.dataagent.util.ChatResponseUtil;
 import com.alibaba.cloud.ai.dataagent.util.FluxUtil;
 import com.alibaba.cloud.ai.dataagent.util.StateUtil;
@@ -28,12 +29,16 @@ import com.alibaba.cloud.ai.graph.action.NodeAction;
 import com.alibaba.cloud.ai.graph.streaming.StreamingOutput;
 import lombok.AllArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.apache.commons.lang3.StringUtils;
 import org.springframework.ai.chat.model.ChatResponse;
 import org.springframework.stereotype.Component;
 import reactor.core.publisher.Flux;
 
+import java.util.LinkedHashSet;
 import java.util.LinkedHashMap;
+import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 
 import static com.alibaba.cloud.ai.dataagent.constant.Constant.DB_DIALECT_TYPE;
 import static com.alibaba.cloud.ai.dataagent.constant.Constant.EVIDENCE;
@@ -43,6 +48,8 @@ import static com.alibaba.cloud.ai.dataagent.constant.Constant.SQL_GENERATE_OUTP
 import static com.alibaba.cloud.ai.dataagent.constant.Constant.SQL_REGENERATE_REASON;
 import static com.alibaba.cloud.ai.dataagent.constant.Constant.SEMANTIC_CONSISTENCY_NODE_OUTPUT;
 import static com.alibaba.cloud.ai.dataagent.constant.Constant.TABLE_RELATION_OUTPUT;
+import static com.alibaba.cloud.ai.dataagent.constant.Constant.TIME_SEMANTIC_BYPASS;
+import static com.alibaba.cloud.ai.dataagent.constant.Constant.TIME_SEMANTIC_FAIL_COUNT;
 import static com.alibaba.cloud.ai.dataagent.prompt.PromptHelper.buildMixMacSqlDbPrompt;
 import static com.alibaba.cloud.ai.dataagent.util.PlanProcessUtil.getCurrentExecutionStepInstruction;
 
@@ -53,6 +60,8 @@ import static com.alibaba.cloud.ai.dataagent.util.PlanProcessUtil.getCurrentExec
 @Component
 @AllArgsConstructor
 public class SemanticConsistencyNode implements NodeAction {
+
+	private static final int TIME_SEMANTIC_BYPASS_THRESHOLD = 3;
 
 	private static final String PASS_CONCLUSION = "通过";
 
@@ -67,6 +76,8 @@ public class SemanticConsistencyNode implements NodeAction {
 	private static final String SOLUTION_KEY = "解决方案=";
 
 	private final Nl2SqlService nl2SqlService;
+
+	private final QueryContractService queryContractService;
 
 	@Override
 	public Map<String, Object> apply(OverAllState state) throws Exception {
@@ -87,6 +98,13 @@ public class SemanticConsistencyNode implements NodeAction {
 			log.debug("使用用户原始问题进行语义一致性校验");
 		}
 
+		String queryContract = queryContractService.buildQueryContract(userQuery, executionDescription, evidence, schemaDTO);
+		if (!queryContract.isBlank()) {
+			log.info("已构建语义校验查询契约，用于减少生成与校验之间的约束偏差。");
+		}
+		int currentTimeSemanticFailCount = state.value(TIME_SEMANTIC_FAIL_COUNT, 0);
+		boolean currentTimeSemanticBypass = state.value(TIME_SEMANTIC_BYPASS, false);
+
 		SemanticConsistencyDTO semanticConsistencyDTO = SemanticConsistencyDTO.builder()
 			.dialect(dialect)
 			.sql(sql)
@@ -94,6 +112,7 @@ public class SemanticConsistencyNode implements NodeAction {
 			.schemaInfo(buildMixMacSqlDbPrompt(schemaDTO, true))
 			.userQuery(userQuery)
 			.evidence(evidence)
+			.queryContract(queryContract)
 			.build();
 		log.info("开始语义一致性校验，SQL：{}", sql);
 		Flux<ChatResponse> validationResultFlux = nl2SqlService.performSemanticConsistency(semanticConsistencyDTO);
@@ -101,25 +120,65 @@ public class SemanticConsistencyNode implements NodeAction {
 		Flux<ChatResponse> displayFlux = validationResultFlux
 			.doOnNext(chatResponse -> validationCollector.append(ChatResponseUtil.getText(chatResponse)))
 			.thenMany(Flux.defer(() -> Flux
-				.just(ChatResponseUtil.createResponse(buildValidationDisplayMessage(validationCollector.toString())))));
+				.just(ChatResponseUtil.createResponse(
+						buildValidationDisplayMessage(validationCollector.toString(), queryContract,
+								currentTimeSemanticFailCount, currentTimeSemanticBypass)))));
 
 		Flux<GraphResponse<StreamingOutput>> generator = FluxUtil.createStreamingGeneratorWithMessages(this.getClass(),
 				state, "开始语义一致性校验", "语义一致性校验完成", ignored -> {
 					String validationResult = validationCollector.toString();
-					boolean isPassed = parseValidationResult(validationResult);
+					ValidationDecision validationDecision = evaluateValidationResult(validationResult, queryContract,
+							currentTimeSemanticFailCount, currentTimeSemanticBypass);
+					boolean isPassed = validationDecision.passed();
 					if (isPassed) {
+						if (validationDecision.bypassJustEnabled()) {
+							log.info("连续触发时间语义校验失败，已临时关闭本轮对话的时间校验，当前次数：{}",
+									validationDecision.timeSemanticFailCount());
+						}
+						if (validationDecision.downgraded() && !validationDecision.timeSemanticBypass()) {
+							log.info("检测到 Schema 缺少可靠快照时间字段，本轮仅因推断时间条件缺失而失败，降级为通过。摘要：{}",
+									extractFailureBriefSummary(validationResult));
+						}
+						if (validationDecision.timeSemanticBypass() && validationDecision.timeSemanticFailure()) {
+							log.info("时间语义熔断已开启，本轮放开时间类语义校验，摘要：{}", extractFailureBriefSummary(validationResult));
+						}
 						log.info("语义一致性校验通过");
 					}
 					else {
 						log.info("语义一致性校验未通过，摘要：{}", extractFailureBriefSummary(validationResult));
 					}
-					Map<String, Object> result = buildValidationResult(isPassed, validationResult);
+					Map<String, Object> result = buildValidationResult(isPassed, validationResult,
+							validationDecision.timeSemanticFailCount(), validationDecision.timeSemanticBypass());
 					log.info("[{}] 语义一致性校验完成，是否通过：{}，摘要：{}", this.getClass().getSimpleName(), isPassed,
 							isPassed ? "通过" : extractFailureBriefSummary(validationResult));
 					return result;
 				}, displayFlux);
 
 		return Map.of(SEMANTIC_CONSISTENCY_NODE_OUTPUT, generator);
+	}
+
+	private ValidationDecision evaluateValidationResult(String validationResult, String queryContract,
+			int currentTimeSemanticFailCount, boolean currentTimeSemanticBypass) {
+		if (parseValidationResult(validationResult)) {
+			return ValidationDecision.pass(currentTimeSemanticFailCount, currentTimeSemanticBypass);
+		}
+		boolean timeSemanticFailure = isTimeSemanticFailure(validationResult);
+		int nextTimeSemanticFailCount = currentTimeSemanticFailCount;
+		boolean nextTimeSemanticBypass = currentTimeSemanticBypass;
+		if (timeSemanticFailure && !currentTimeSemanticBypass) {
+			nextTimeSemanticFailCount = currentTimeSemanticFailCount + 1;
+			if (nextTimeSemanticFailCount >= TIME_SEMANTIC_BYPASS_THRESHOLD) {
+				nextTimeSemanticBypass = true;
+			}
+		}
+		if (timeSemanticFailure && nextTimeSemanticBypass) {
+			return ValidationDecision.downgradedPass(nextTimeSemanticFailCount, nextTimeSemanticBypass,
+					!currentTimeSemanticBypass && nextTimeSemanticBypass, true);
+		}
+		if (shouldDowngradeMissingTimeFilterFailure(validationResult, queryContract)) {
+			return ValidationDecision.downgradedPass(nextTimeSemanticFailCount, nextTimeSemanticBypass, false, true);
+		}
+		return ValidationDecision.fail(nextTimeSemanticFailCount, nextTimeSemanticBypass, timeSemanticFailure);
 	}
 
 	private boolean parseValidationResult(String validationResult) {
@@ -211,8 +270,10 @@ public class SemanticConsistencyNode implements NodeAction {
 		return summary.length() == 0 ? trimmed : summary.toString();
 	}
 
-	private String buildValidationDisplayMessage(String validationResult) {
-		if (parseValidationResult(validationResult)) {
+	private String buildValidationDisplayMessage(String validationResult, String queryContract,
+			int currentTimeSemanticFailCount, boolean currentTimeSemanticBypass) {
+		if (evaluateValidationResult(validationResult, queryContract, currentTimeSemanticFailCount, currentTimeSemanticBypass)
+			.passed()) {
 			return "语义一致性校验通过";
 		}
 		String summary = extractFailureBriefSummary(validationResult);
@@ -221,6 +282,79 @@ public class SemanticConsistencyNode implements NodeAction {
 		}
 		// 前端提示只保留简短失败原因，避免把完整结构化内容直接展示出来。
 		return "语义一致性校验未通过：" + abbreviate(summary, 80);
+	}
+
+	private boolean isTimeSemanticFailure(String validationResult) {
+		String trimmed = StringUtils.trimToEmpty(validationResult);
+		if (trimmed.isEmpty() || !trimmed.startsWith(FAIL_CONCLUSION)) {
+			return false;
+		}
+		Map<String, String> fields = parseStructuredFailureFields(trimmed);
+		String errorType = fields.getOrDefault("错误类型", trimmed);
+		String problemDescription = fields.getOrDefault("问题描述", trimmed);
+		String typicalError = fields.getOrDefault("典型错误", "");
+		String normalizedErrorType = StringUtils.defaultString(errorType).toUpperCase(Locale.ROOT);
+		String normalizedDetails = StringUtils.defaultString(problemDescription) + "\n" + typicalError;
+		return normalizedErrorType.contains("TIME_") || normalizedErrorType.contains("DATE_")
+				|| normalizedDetails.contains("时间") || normalizedDetails.contains("日期") || normalizedDetails.contains("截至")
+				|| normalizedDetails.contains("截止") || normalizedDetails.contains("快照");
+	}
+
+	private boolean shouldDowngradeMissingTimeFilterFailure(String validationResult, String queryContract) {
+		// 当 Schema 明确缺少可靠快照字段时，只因“缺少推断时间条件”失败不再继续空转重试。
+		if (!StringUtils.contains(queryContract, QueryContractService.NO_RELIABLE_SNAPSHOT_FIELD_MARKER)
+				|| !StringUtils.contains(queryContract, QueryContractService.AVOID_INFERRED_TIME_FILTER_MARKER)) {
+			return false;
+		}
+		String trimmed = StringUtils.trimToEmpty(validationResult);
+		if (trimmed.isEmpty()) {
+			return false;
+		}
+		Map<String, String> fields = trimmed.startsWith(FAIL_CONCLUSION) ? parseStructuredFailureFields(trimmed) : Map.of();
+		String errorType = fields.getOrDefault("错误类型", trimmed);
+		String problemDescription = fields.getOrDefault("问题描述", trimmed);
+		String failureDetails = problemDescription + "\n" + fields.getOrDefault("典型错误", "");
+		if (!isMissingTimeFilterFailure(errorType, problemDescription)) {
+			return false;
+		}
+		return !containsDiscouragedPseudoSnapshotField(failureDetails, queryContract);
+	}
+
+	private boolean isMissingTimeFilterFailure(String errorType, String problemDescription) {
+		String normalizedErrorType = StringUtils.defaultString(errorType).toUpperCase(Locale.ROOT);
+		String normalizedProblem = StringUtils.defaultString(problemDescription);
+		return normalizedErrorType.contains("TIME_FILTER_MISSING") || normalizedProblem.contains("缺少与时间相关的筛选条件")
+				|| normalizedProblem.contains("关键日期过滤") || normalizedProblem.contains("限定在“截至");
+	}
+
+	private boolean containsDiscouragedPseudoSnapshotField(String text, String queryContract) {
+		if (StringUtils.isBlank(text) || StringUtils.isBlank(queryContract)) {
+			return false;
+		}
+		String normalizedText = text.toLowerCase(Locale.ROOT);
+		for (String fieldName : extractDiscouragedPseudoSnapshotFields(queryContract)) {
+			if (normalizedText.contains(fieldName.toLowerCase(Locale.ROOT))) {
+				return true;
+			}
+		}
+		return false;
+	}
+
+	private Set<String> extractDiscouragedPseudoSnapshotFields(String queryContract) {
+		Set<String> fields = new LinkedHashSet<>();
+		for (String line : StringUtils.defaultString(queryContract).split("\\R")) {
+			if (!line.startsWith("- 不要将以下字段直接当作业务快照时间替代：")) {
+				continue;
+			}
+			String payload = StringUtils.substringAfter(line, "：");
+			for (String field : payload.split("[,，]")) {
+				String normalizedField = field.trim();
+				if (!normalizedField.isEmpty()) {
+					fields.add(normalizedField);
+				}
+			}
+		}
+		return fields;
 	}
 
 	private String abbreviate(String text, int maxLength) {
@@ -338,11 +472,39 @@ public class SemanticConsistencyNode implements NodeAction {
 		summary.append(label).append('：').append(value);
 	}
 
-	private Map<String, Object> buildValidationResult(boolean passed, String validationResult) {
+	private Map<String, Object> buildValidationResult(boolean passed, String validationResult, int timeSemanticFailCount,
+			boolean timeSemanticBypass) {
+		Map<String, Object> result = new LinkedHashMap<>();
+		result.put(TIME_SEMANTIC_FAIL_COUNT, timeSemanticFailCount);
+		result.put(TIME_SEMANTIC_BYPASS, timeSemanticBypass);
 		if (passed) {
-			return Map.of(SEMANTIC_CONSISTENCY_NODE_OUTPUT, true);
+			result.put(SEMANTIC_CONSISTENCY_NODE_OUTPUT, true);
+			return result;
 		}
-		return Map.of(SEMANTIC_CONSISTENCY_NODE_OUTPUT, false, SQL_REGENERATE_REASON, SqlRetryDto.semantic(validationResult));
+		result.put(SEMANTIC_CONSISTENCY_NODE_OUTPUT, false);
+		result.put(SQL_REGENERATE_REASON, SqlRetryDto.semantic(validationResult));
+		return result;
+	}
+
+	private record ValidationDecision(boolean passed, boolean downgraded, int timeSemanticFailCount,
+			boolean timeSemanticBypass, boolean bypassJustEnabled, boolean timeSemanticFailure) {
+
+		private static ValidationDecision pass(int timeSemanticFailCount, boolean timeSemanticBypass) {
+			return new ValidationDecision(true, false, timeSemanticFailCount, timeSemanticBypass, false, false);
+		}
+
+		private static ValidationDecision downgradedPass(int timeSemanticFailCount, boolean timeSemanticBypass,
+				boolean bypassJustEnabled, boolean timeSemanticFailure) {
+			return new ValidationDecision(true, true, timeSemanticFailCount, timeSemanticBypass, bypassJustEnabled,
+					timeSemanticFailure);
+		}
+
+		private static ValidationDecision fail(int timeSemanticFailCount, boolean timeSemanticBypass,
+				boolean timeSemanticFailure) {
+			return new ValidationDecision(false, false, timeSemanticFailCount, timeSemanticBypass, false,
+					timeSemanticFailure);
+		}
+
 	}
 
 }

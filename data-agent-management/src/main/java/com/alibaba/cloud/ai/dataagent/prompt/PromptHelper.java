@@ -131,7 +131,8 @@ public class PromptHelper {
 		params.put("current_time_info", LocalDateTime.now(chinaZone).format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss")));
 		params.put("today_start_timestamp", todayStart.toEpochSecond());
 		params.put("today_end_timestamp", todayEnd.toEpochSecond());
-		return PromptConstant.getNewSqlGeneratorPromptTemplate().render(params);
+ 		String prompt = PromptConstant.getNewSqlGeneratorPromptTemplate().render(params);
+		return appendPromptSection(prompt, "## 查询契约（强约束）", sqlGenerationDTO.getQueryContract());
 	}
 
 	public static String buildSemanticConsistenPrompt(SemanticConsistencyDTO semanticConsistencyDTO) {
@@ -142,7 +143,8 @@ public class PromptHelper {
 		params.put("evidence", semanticConsistencyDTO.getEvidence());
 		params.put("schema_info", semanticConsistencyDTO.getSchemaInfo());
 		params.put("sql", semanticConsistencyDTO.getSql());
-		return PromptConstant.getSemanticConsistencyPromptTemplate().render(params);
+		String prompt = PromptConstant.getSemanticConsistencyPromptTemplate().render(params);
+		return appendPromptSection(prompt, "## 查询契约（强约束）", semanticConsistencyDTO.getQueryContract());
 	}
 
 	/**
@@ -188,8 +190,8 @@ public class PromptHelper {
 		params.put("current_time_info", LocalDateTime.now(chinaZone).format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss")));
 		params.put("today_start_timestamp", todayStart.toEpochSecond());
 		params.put("today_end_timestamp", todayEnd.toEpochSecond());
-
-		return PromptConstant.getSqlErrorFixerPromptTemplate().render(params);
+		String prompt = PromptConstant.getSqlErrorFixerPromptTemplate().render(params);
+		return appendPromptSection(prompt, "## 查询契约（强约束）", sqlGenerationDTO.getQueryContract());
 	}
 
 	public static String buildSemanticRetryPrompt(SqlGenerationDTO sqlGenerationDTO) {
@@ -213,8 +215,9 @@ public class PromptHelper {
 		params.put("current_time_info", LocalDateTime.now(chinaZone).format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss")));
 		params.put("today_start_timestamp", todayStart.toEpochSecond());
 		params.put("today_end_timestamp", todayEnd.toEpochSecond());
-
-		return PromptConstant.getSemanticRetryPromptTemplate().render(params);
+		String prompt = PromptConstant.getSemanticRetryPromptTemplate().render(params);
+		prompt = appendPromptSection(prompt, "## 查询契约（强约束）", sqlGenerationDTO.getQueryContract());
+		return appendPromptSection(prompt, "## 语义重试护栏", sqlGenerationDTO.getRetryGuardrails());
 	}
 
 	/**
@@ -380,6 +383,16 @@ public class PromptHelper {
 			// 如果模板渲染失败，直接返回原始内容
 			return optimizationPrompt;
 		}
+	}
+
+	/**
+	 * 在不改动现有提示词模板结构的前提下，为生成器和校验器追加共享硬约束。
+	 */
+	private static String appendPromptSection(String prompt, String title, String content) {
+		if (StringUtils.isBlank(content)) {
+			return prompt;
+		}
+		return StringUtils.defaultString(prompt).trim() + "\n\n" + title + "\n" + content.trim();
 	}
 
 }

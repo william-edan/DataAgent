@@ -22,10 +22,14 @@ import org.springframework.stereotype.Service;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 /**
  * SQL 语义失败学习服务实现。
@@ -48,6 +52,16 @@ public class SqlSemanticLearningServiceImpl implements SqlSemanticLearningServic
 	private static final String DEFAULT_TEXT = "无";
 
 	private static final String LEARNING_SECTION_TITLE = "本轮 SQL 失败学习经验";
+
+	private static final Pattern FIELD_NAME_PATTERN = Pattern.compile("([A-Za-z_][A-Za-z0-9_]*)\\s*字段");
+
+	private static final Pattern FILTER_FIELD_PATTERN = Pattern.compile(
+			"(?:\\b\\w+\\.)?([A-Za-z_][A-Za-z0-9_]*)\\s*(?:=|!=|<>|>=|<=|>|<|like\\b|in\\b|between\\b)",
+			Pattern.CASE_INSENSITIVE);
+
+	private static final Set<String> SQL_KEYWORDS = Set.of("select", "from", "where", "and", "or", "on", "join", "left",
+			"right", "inner", "outer", "group", "order", "having", "limit", "count", "sum", "avg", "min", "max",
+			"distinct", "as", "case", "when", "then", "else", "end", "between", "in", "like", "is", "null");
 
 	@Override
 	public Optional<SqlSemanticLearningCard> buildLearningCard(String validationResult) {
@@ -188,6 +202,44 @@ public class SqlSemanticLearningServiceImpl implements SqlSemanticLearningServic
 		return promptEvidence.toString();
 	}
 
+	@Override
+	public String buildSemanticRetryGuardrails(String validationResult) {
+		Optional<SqlSemanticLearningCard> optionalCard = buildLearningCard(validationResult);
+		if (optionalCard.isEmpty()) {
+			return "";
+		}
+
+		SqlSemanticLearningCard card = optionalCard.orElseThrow();
+		LinkedHashSet<String> guardrails = new LinkedHashSet<>();
+		String forbiddenField = extractForbiddenFilterField(card);
+		if (StringUtils.isNotBlank(forbiddenField)) {
+			guardrails.add("必须移除 " + forbiddenField + " 相关的 WHERE/HAVING/ON 过滤条件");
+			guardrails.add("禁止再次把 " + forbiddenField + " 当作默认补充过滤字段");
+		}
+
+		for (String solution : Optional.ofNullable(card.getSolutions()).orElse(List.of())) {
+			String normalizedGuardrail = normalizeGuardrail(solution);
+			if (StringUtils.isNotBlank(normalizedGuardrail)) {
+				guardrails.add(normalizedGuardrail);
+			}
+		}
+
+		if (guardrails.isEmpty() && StringUtils.isNotBlank(card.getProblemDescription())) {
+			guardrails.add("必须优先修复以下语义问题：" + card.getProblemDescription().trim());
+		}
+
+		if (guardrails.isEmpty()) {
+			return "";
+		}
+
+		StringBuilder result = new StringBuilder("本次重试硬约束：\n");
+		int index = 1;
+		for (String guardrail : guardrails) {
+			result.append(index++).append(". ").append(guardrail).append('\n');
+		}
+		return result.toString().trim();
+	}
+
 	private Map<String, String> parseStructuredFields(String validationResult) {
 		String payload = validationResult.substring(FAIL_CONCLUSION.length()).stripLeading();
 		if (payload.startsWith("|")) {
@@ -303,6 +355,61 @@ public class SqlSemanticLearningServiceImpl implements SqlSemanticLearningServic
 			results.add(normalized);
 		}
 		return results;
+	}
+
+	private String normalizeGuardrail(String solution) {
+		String normalized = StringUtils.defaultString(solution).replaceFirst("^\\d+\\.", "").trim();
+		if (normalized.isEmpty()) {
+			return "";
+		}
+		if (normalized.startsWith("必须") || normalized.startsWith("禁止") || normalized.startsWith("优先")
+				|| normalized.startsWith("仅保留")) {
+			return normalized;
+		}
+		return "必须" + normalized;
+	}
+
+	private String extractForbiddenFilterField(SqlSemanticLearningCard card) {
+		String fromDescription = extractFieldName(StringUtils.defaultString(card.getProblemDescription()));
+		if (StringUtils.isNotBlank(fromDescription)) {
+			return fromDescription;
+		}
+
+		String fromSql = extractFilterField(StringUtils.defaultString(card.getTypicalWrongSql()));
+		if (StringUtils.isNotBlank(fromSql)) {
+			return fromSql;
+		}
+
+		for (String solution : Optional.ofNullable(card.getSolutions()).orElse(List.of())) {
+			String fromSolution = extractFieldName(solution);
+			if (StringUtils.isNotBlank(fromSolution)) {
+				return fromSolution;
+			}
+		}
+		return "";
+	}
+
+	private String extractFieldName(String text) {
+		Matcher matcher = FIELD_NAME_PATTERN.matcher(StringUtils.defaultString(text));
+		if (matcher.find()) {
+			return matcher.group(1);
+		}
+		return "";
+	}
+
+	private String extractFilterField(String sql) {
+		Matcher matcher = FILTER_FIELD_PATTERN.matcher(StringUtils.defaultString(sql));
+		while (matcher.find()) {
+			String candidate = StringUtils.defaultString(matcher.group(1)).trim();
+			if (candidate.isEmpty()) {
+				continue;
+			}
+			String normalized = candidate.toLowerCase(Locale.ROOT);
+			if (!SQL_KEYWORDS.contains(normalized)) {
+				return candidate;
+			}
+		}
+		return "";
 	}
 
 	private Optional<SqlSemanticLearningCard> buildOnlyFullGroupByCard(String errorMessage, String sql) {

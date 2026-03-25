@@ -28,6 +28,7 @@ import com.alibaba.cloud.ai.dataagent.dto.datasource.SqlRetryDto;
 import com.alibaba.cloud.ai.dataagent.dto.prompt.SqlGenerationDTO;
 import com.alibaba.cloud.ai.dataagent.dto.schema.SchemaDTO;
 import com.alibaba.cloud.ai.dataagent.service.nl2sql.Nl2SqlService;
+import com.alibaba.cloud.ai.dataagent.service.nl2sql.QueryContractService;
 import com.alibaba.cloud.ai.dataagent.service.nl2sql.SqlSemanticLearningPersistenceService;
 import com.alibaba.cloud.ai.dataagent.service.nl2sql.SqlSemanticLearningService;
 import com.alibaba.cloud.ai.graph.GraphResponse;
@@ -46,6 +47,7 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 
 import static com.alibaba.cloud.ai.dataagent.constant.Constant.*;
 import static com.alibaba.cloud.ai.dataagent.util.PlanProcessUtil.getCurrentExecutionStepInstruction;
@@ -70,6 +72,8 @@ public class SqlGenerateNode implements NodeAction {
 	private final DataAgentProperties properties;
 
 	private final SqlSemanticLearningService sqlSemanticLearningService;
+
+	private final QueryContractService queryContractService;
 
 	private final SqlSemanticLearningPersistenceService sqlSemanticLearningPersistenceService;
 
@@ -147,6 +151,12 @@ public class SqlGenerateNode implements NodeAction {
 			retryHistory = addToHistory(retryHistory, count, originalSql, retryDto.reason(), "semantic");
 			SqlSemanticLearningCard learningCard = buildSemanticLearningCard(retryDto.reason());
 			if (learningCard != null) {
+				if (hasRepeatedSemanticFingerprint(retryHistory.subList(0, retryHistory.size() - 1),
+						learningCard.getFingerprint())) {
+					log.warn("检测到重复的 SQL 语义失败指纹，终止本轮重试以避免无效循环，指纹：{}", learningCard.getFingerprint());
+					return buildSemanticRetryShortCircuitResult(state, retryHistory, semanticLearningContent,
+							semanticLearningFingerprints, learningCard.getFingerprint());
+				}
 				if (sqlSemanticLearningService.isDuplicate(learningCard.getFingerprint(), semanticLearningFingerprints)) {
 					log.info("检测到重复的 SQL 语义失败经验，复用已有经验卡，指纹：{}", learningCard.getFingerprint());
 				}
@@ -228,11 +238,21 @@ public class SqlGenerateNode implements NodeAction {
 
 	private SqlGenerationDTO buildSqlGenerationDTO(OverAllState state, String originalSql, String errorMsg,
 			String executionDescription, List<SqlRetryHistoryItem> retryHistory, String semanticLearningContent) {
-		String evidence = sqlSemanticLearningService.buildPromptEvidence(StateUtil.getStringValue(state, EVIDENCE),
-				semanticLearningContent);
+		String originalEvidence = StateUtil.getStringValue(state, EVIDENCE);
+		String evidence = sqlSemanticLearningService.buildPromptEvidence(originalEvidence, semanticLearningContent);
 		SchemaDTO schemaDTO = StateUtil.getObjectValue(state, TABLE_RELATION_OUTPUT, SchemaDTO.class);
 		String userQuery = StateUtil.getCanonicalQuery(state);
 		String dialect = StateUtil.getStringValue(state, DB_DIALECT_TYPE);
+		String queryContract = queryContractService.buildQueryContract(userQuery, executionDescription, originalEvidence,
+				schemaDTO);
+		String retryGuardrails = sqlSemanticLearningService.buildSemanticRetryGuardrails(errorMsg);
+
+		if (StringUtils.isNotBlank(queryContract)) {
+			log.info("已构建 SQL 查询契约，用于约束生成与重试。");
+		}
+		if (StringUtils.isNotBlank(retryGuardrails)) {
+			log.info("已提取语义重试护栏，将用于避免重复生成相同错误模式。");
+		}
 
 		return SqlGenerationDTO.builder()
 			.evidence(evidence)
@@ -243,6 +263,8 @@ public class SqlGenerateNode implements NodeAction {
 			.executionDescription(executionDescription)
 			.dialect(dialect)
 			.retryHistory(retryHistory)
+			.queryContract(queryContract)
+			.retryGuardrails(retryGuardrails)
 			.build();
 	}
 
@@ -306,6 +328,42 @@ public class SqlGenerateNode implements NodeAction {
 			updatedFingerprints.add(fingerprint);
 		}
 		return updatedFingerprints;
+	}
+
+	/**
+	 * 如果历史里已经出现过同一个语义失败指纹，继续重试通常只会重复生成同类错误 SQL。
+	 */
+	private boolean hasRepeatedSemanticFingerprint(List<SqlRetryHistoryItem> retryHistory, String fingerprint) {
+		if (StringUtils.isBlank(fingerprint) || retryHistory == null || retryHistory.isEmpty()) {
+			return false;
+		}
+		return retryHistory.stream()
+			.filter(item -> "semantic".equals(item.failureType()))
+			.map(SqlRetryHistoryItem::failureReason)
+			.map(sqlSemanticLearningService::buildLearningCard)
+			.flatMap(Optional::stream)
+			.map(SqlSemanticLearningCard::getFingerprint)
+			.anyMatch(fingerprint::equals);
+	}
+
+	private Map<String, Object> buildSemanticRetryShortCircuitResult(OverAllState state,
+			List<SqlRetryHistoryItem> retryHistory, String semanticLearningContent,
+			List<String> semanticLearningFingerprints, String fingerprint) {
+		Flux<ChatResponse> preFlux = Flux
+			.just(ChatResponseUtil.createResponse("检测到重复的语义失败模式，结束本轮 SQL 重试，避免无效循环。"));
+		Flux<GraphResponse<StreamingOutput>> generator = FluxUtil.createStreamingGeneratorWithMessages(this.getClass(),
+				state, "正在结束重复语义重试...", "重复语义重试已终止", ignored -> {
+					Map<String, Object> result = new HashMap<>();
+					result.put(SQL_GENERATE_OUTPUT, StateGraph.END);
+					result.put(SQL_GENERATE_COUNT, 0);
+					result.put(SQL_REGENERATE_REASON, SqlRetryDto.empty());
+					result.put(SQL_RETRY_HISTORY, retryHistory);
+					result.put(SQL_SEMANTIC_LEARNING_CONTENT, semanticLearningContent);
+					result.put(SQL_SEMANTIC_LEARNING_FINGERPRINTS, semanticLearningFingerprints);
+					log.warn("重复的语义失败指纹已短路处理，指纹：{}", fingerprint);
+					return result;
+				}, preFlux);
+		return Map.of(SQL_GENERATE_OUTPUT, generator);
 	}
 
 	private void persistLearningCard(OverAllState state, SqlSemanticLearningCard learningCard) {

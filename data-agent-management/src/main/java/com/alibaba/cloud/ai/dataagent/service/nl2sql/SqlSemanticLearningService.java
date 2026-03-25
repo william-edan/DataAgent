@@ -39,4 +39,6 @@ public interface SqlSemanticLearningService {
 
 	String buildPromptEvidence(String evidence, String learningContent);
 
+	String buildSemanticRetryGuardrails(String validationResult);
+
 }

@@ -48,4 +48,14 @@ public class SqlGenerationDTO {
 	 */
 	private List<SqlRetryHistoryItem> retryHistory;
 
+	/**
+	 * 查询契约。将用户问题中的显式约束固化下来，避免 SQL 生成时自行猜测。
+	 */
+	private String queryContract;
+
+	/**
+	 * 语义重试护栏。仅在语义校验失败后使用，约束本轮重试的必须项和禁止项。
+	 */
+	private String retryGuardrails;
+
 }
