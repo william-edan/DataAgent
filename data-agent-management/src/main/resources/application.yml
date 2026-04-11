@@ -4,9 +4,9 @@ server:
 # 存储 DataAgent 业务数据的数据库，并非Agent分析数据的来源
 spring:
   elasticsearch:
-    uris: http://8.156.74.119:9200
+    uris: http://192.168.2.26:9200
     username: elastic
-    password: XWuH_rhjfz5ZD+Brrn0D
+    password: Elastic_pwcyBZ
   datasource:
     url: ${DATA_AGENT_DATASOURCE_URL:jdbc:mysql://8.156.74.119:3306/ai_assistant_agent?useUnicode=true&characterEncoding=utf-8&zeroDateTimeBehavior=convertToNull&transformedBitIsBoolean=true&allowMultiQueries=true&allowPublicKeyRetrieval=true&useSSL=false&serverTimezone=Asia/Shanghai}
     username: ${DATA_AGENT_DATASOURCE_USERNAME:root}
