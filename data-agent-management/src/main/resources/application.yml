@@ -8,8 +8,8 @@ spring:
     username: elastic
     password: Elastic_pwcyBZ
   datasource:
-    url: ${DATA_AGENT_DATASOURCE_URL:jdbc:mysql://8.156.74.119:3306/ai_assistant_agent?useUnicode=true&characterEncoding=utf-8&zeroDateTimeBehavior=convertToNull&transformedBitIsBoolean=true&allowMultiQueries=true&allowPublicKeyRetrieval=true&useSSL=false&serverTimezone=Asia/Shanghai}
-    username: ${DATA_AGENT_DATASOURCE_USERNAME:root}
+    url: ${DATA_AGENT_DATASOURCE_URL:jdbc:mysql://192.168.2.26:3306/data_agent_db?useUnicode=true&characterEncoding=utf-8&zeroDateTimeBehavior=convertToNull&transformedBitIsBoolean=true&allowMultiQueries=true&allowPublicKeyRetrieval=true&useSSL=false&serverTimezone=Asia/Shanghai}
+    username: ${DATA_AGENT_DATASOURCE_USERNAME:data_agent_db}
     password: ${DATA_AGENT_DATASOURCE_PASSWORD:StrongRootPwd}
     driver-class-name: com.mysql.cj.jdbc.Driver
     type: com.alibaba.druid.pool.DruidDataSource
